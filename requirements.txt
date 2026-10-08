@@ -1,4 +1,6 @@
 numpy>=1.24
 shapely>=2.0      # tests/test_mesh_sim.py
 trimesh>=4.0      # tools/analyze_reference.py, STL checks
+networkx>=3.0     # trimesh body split (tests/test_stl_export.py)
+rtree>=1.0        # trimesh sections (tests/test_stl_export.py)
 pytest>=7

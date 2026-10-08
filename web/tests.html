@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bearing Port Tests</title>
+<style>
+  body { font: 13px/1.45 ui-monospace, Consolas, monospace; margin: 16px; background: #fff; color: #111; }
+  .pass { color: #0a7a2f; } .fail { color: #b3261e; font-weight: bold; }
+  pre { white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h3>pbmath.js / meshgen.js vs fixtures</h3>
+<pre id="out">running…</pre>
+<script type="module">
+import * as pm from "./js/pbmath.js";
+import { build } from "./js/engine.js";
+
+const out = document.getElementById("out");
+const lines = [];
+let nPass = 0, nFail = 0;
+function check(name, ok, detail = "") {
+  ok ? nPass++ : nFail++;
+  lines.push(`<span class="${ok ? "pass" : "fail"}">${ok ? "PASS" : "FAIL"}</span> ${name}${detail ? "  — " + detail : ""}`);
+}
+const maxAbs = (a, b) => a.length !== b.length ? Infinity : Math.max(...a.map((v, i) => Math.abs(v - b[i])));
+
+async function fixture(name) {
+  const fx = await (await fetch(`../fixtures/${name}`)).json();
+  const p = { ...pm.DEFAULTS, ...fx.params };
+  const g = pm.derive(p);
+  let dmax = 0, dkey = "";
+  for (const [k, v] of Object.entries(fx.derived)) {
+    const e = Math.abs(g[k] - v);
+    if (e > dmax) { dmax = e; dkey = k; }
+  }
+  check(`${name}: derived`, dmax < 1e-9, `max err ${dmax.toExponential(2)} (${dkey})`);
+  const prof = pm.buildProfiles(p, g);
+  for (const k of ["planet", "sun", "ring"]) {
+    const er = maxAbs(prof[k].r, fx.profiles[k].r), et = maxAbs(prof[k].t, fx.profiles[k].t);
+    check(`${name}: profile ${k}`, er < 1e-6 && et < 1e-6, `r ${er.toExponential(2)}, t ${et.toExponential(2)}, n=${prof[k].r.length}`);
+    for (const s of ["rf", "ra", "ri", "ro"]) if (s in fx.profiles[k]) {
+      const e = Math.abs(prof[k][s] - fx.profiles[k][s]);
+      if (e > 1e-6) check(`${name}: profile ${k}.${s}`, false, `${prof[k][s]} vs ${fx.profiles[k][s]}`);
+    }
+  }
+  const ph = pm.phasing(g);
+  const ep = Math.max(maxAbs(ph.orbit, fx.phasing.orbit), maxAbs(ph.spins, fx.phasing.spins), Math.abs(ph.ring_rot - fx.phasing.ring_rot));
+  check(`${name}: phasing`, ep < 1e-9, `max err ${ep.toExponential(2)}`);
+  const { f } = pm.helixTwist(g, p.beta, p.H, p.reversals);
+  let et = 0;
+  for (const [z, a, b, c] of fx.twist_samples) { const v = f(z); et = Math.max(et, Math.abs(v[0] - a), Math.abs(v[1] - b), Math.abs(v[2] - c)); }
+  check(`${name}: twist`, et < 1e-9, `max err ${et.toExponential(2)}`);
+  const rep = pm.report(p, g, prof);
+  const diff = rep.map((l, i) => [l, fx.report[i]]).filter(([a, b]) => a !== b);
+  check(`${name}: report (${fx.report.length} lines)`, rep.length === fx.report.length && diff.length === 0,
+    diff.map(([a, b]) => `\n   js: ${a}\n   py: ${b}`).join(""));
+  for (const sc of fx.solver) {
+    const q = { ...p, ...sc.input };
+    const t0 = performance.now();
+    const s = pm.solve(q, sc.lock);
+    const ms = (performance.now() - t0).toFixed(0);
+    const ok = s.Zs === sc.out.Zs && s.Zp === sc.out.Zp && s.Zr === sc.out.Zr && s.N === sc.out.N &&
+      JSON.stringify(s.notes) === JSON.stringify(sc.notes);
+    check(`${name}: solve(${JSON.stringify(sc.input)}, ${sc.lock})`, ok,
+      `${s.Zs}/${s.Zp}/${s.Zr} x${s.N} [${ms} ms]` + (ok ? "" : ` expected ${JSON.stringify(sc.out)} ${JSON.stringify(sc.notes)} got ${JSON.stringify(s.notes)}`));
+  }
+  return p;
+}
+
+function meshChecks(name, p, expect) {
+  const t0 = performance.now();
+  const r = build(p);
+  const ms = performance.now() - t0;
+  let tris = 0;
+  for (const k of ["ring", "sun", "planet"]) {
+    const c = r.checks[k];
+    tris += c.tris * (k === "planet" ? r.placements.length : 1);
+    check(`${name}: ${k} mesh closed & oriented`, c.ok, `${c.tris} tris, ${c.badEdges} bad edges`);
+    if (expect && expect[k]) {
+      const e = Math.abs(c.volume / expect[k] - 1);
+      check(`${name}: ${k} volume ${c.volume.toFixed(2)} mm³ vs FreeCAD ${expect[k]}`, e < 0.01, `${(e * 100).toFixed(2)} %`);
+    } else check(`${name}: ${k} volume ${c.volume.toFixed(2)} mm³ > 0`, c.volume > 0);
+  }
+  lines.push(`     total ${tris} facets (${1 + 1 + r.placements.length} bodies), build ${ms.toFixed(0)} ms ` +
+    `(profiles ${r.ms.profiles.toFixed(0)}, mesh ${r.ms.mesh.toFixed(0)})`);
+}
+
+try {
+  const p1 = await fixture("default_profiles.json");
+  const p2 = await fixture("large_hex_profiles.json");
+  // volumes of the FreeCAD export (DocumentsPlanetaryBearingPlanetaryBearing_OD31.7_..._e0.15.stl, measured with trimesh)
+  meshChecks("default", p1, { ring: 532.31, sun: 354.07, planet: 12.742 });
+  meshChecks("large_hex", p2, null);
+  for (const shape of ["Square", "D-Flat", "None"]) meshChecks(`default sun bore ${shape}`, { ...p1, sun_bore_shape: shape, ID: shape === "None" ? 22 : 8 }, null);
+  meshChecks("no chamfer", { ...p1, chamfer: 0 }, null);
+  meshChecks("spur, hex planet bores", { ...p2, beta: 0, planet_bore_shape: "Hex" }, null);
+} catch (e) {
+  check("exception", false, String(e.stack || e));
+}
+lines.unshift(`${nFail ? '<span class="fail">' : '<span class="pass">'}${nPass} passed, ${nFail} failed</span>\n`);
+out.innerHTML = lines.join("\n");
+window.__testResult = { pass: nPass, fail: nFail, text: out.textContent };
+</script>
+</body>
+</html>

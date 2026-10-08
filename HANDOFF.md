@@ -35,7 +35,7 @@ Extra parameters added during the build: `tip_land` (pointed tips are truncated 
 - **Done, verified:** the Python core (`core/pb_math.py`), the FreeCAD FeaturePython object, STL export, and the tests (21 passing).
 - **Installed on Isaac's PC:** `%APPDATA%\FreeCAD\v1-1\Mod\PlanetaryBearing\` (FreeCAD 1.1.4, Windows, Python 3.11 with numpy and shapely), plus the macro in `%APPDATA%\FreeCAD\v1-1\Macro\`.
 - **Saved outputs on Isaac's PC:** `Documents\PlanetaryBearing\PlanetaryBearing.FCStd` and `PlanetaryBearing_OD31.7_ID22_H5_S56P4x24R64_b30_e0.15.stl`. That STL is 388k facets, watertight, with 26 bodies.
-- **NEXT, Step 2 (not started):** a **web app** where the user adjusts these parameters and exports a print-ready STL. See §7.
+- **Done, verified (2026-10-08): Step 2, the web app** in `web/`. See §7 for how it is built and verified.
 
 ## 3. Repo layout
 
@@ -49,6 +49,9 @@ fixtures/*.json          golden outputs from the Python reference (for verifying
 tools/make_fixtures.py   regenerate fixtures
 tools/analyze_reference.py   decode a gear-bearing STL (tooth counts by FFT, orbit, etc.)
 tools/install_freecad.py copy the generator into FreeCAD's Mod folder
+tools/serve_web.py       dev server for web/ (+ PUT /upload/*.stl -> build/)
+web/                     browser app: js/pbmath.js (port), js/meshgen.js (mesh), js/app.js (UI), tests.html
+tests/test_stl_export.py trimesh checks on exported STLs in build/
 reference/micro-gear_ring_22.stl   the reference bearing that inspired the design
 ```
 
@@ -159,8 +162,32 @@ Recommended approach (no OpenCascade needed):
 - **Acceptance:**
   - Fixtures match: atol 1e-6 for profiles, exact for the solver.
   - The exported STL is watertight with 1 + 1 + N bodies.
-  - Default parameters give volumes within about 1% of ring 532, sun 351, planet 12.75 mm³ (FreeCAD B-rep).
+  - Default parameters give volumes within about 1% of ring 532, sun 354, planet 12.74 mm³ (measured on the FreeCAD STL; the earlier "sun 351" was a typo).
   - Port `test_mesh_sim` as a 2D check, or run the Python tests against an exported STL with trimesh.
+
+### 7.1 What was built (2026-10-08)
+
+Plain ES modules, no build step (Node isn't installed on Isaac's PC). three.js 0.160.0 and earcut 2.2.4 load from jsdelivr.
+
+- `web/js/pbmath.js`: line-by-line port of `pb_math.py` (derive, tip_radius, feasible, solve, rack_envelope, ring_profile, phasing, helix_twist, report). `linspace`/`interp` copy numpy's arithmetic. The solver sorts candidates exactly like `np.lexsort((-N, cost))` (ties go to the meshgrid index), so it matches the fixtures exactly.
+- `web/js/meshgen.js`: direct mesh. Every loop (gear outline, toothed ring hole, OD circle, bore) has its **own** z sections (helix rule from `twisted_loft`, plus chamfer sections), and the loops only meet at the earcut caps. That keeps the facet count low: 263k for the defaults, against 388k for the FreeCAD export.
+  - **Chamfers on teeth are tooth-aware:** the vertices beyond the cone radius Rc are spread over an arc at Rc spanning exactly ±t(Rc), which is where the cone meets the flanks. A plain radial clamp would make the chamfered tips too narrow. Bores and the OD use the radial clamp, which is exact for circles.
+  - Sun tip chamfer is limited to `0.5*(ra-rf)`, the same rule FreeCAD uses for planets (it doesn't change the defaults).
+  - Earcut drops exactly-collinear points, so `repairDropped()` re-inserts them as a fan. Without it the caps get T-junctions.
+  - Flanks are thinned with Douglas–Peucker at `MeshDeviation/4`.
+- `web/js/engine.js` (solve/build/checks) runs in `worker.js`, with a main-thread fallback. `geometryErrors()` blocks export when a layout can't be a solid (bore through the teeth, ring roots through the OD, planets overlapping). The solver's "built as-is" case can produce these.
+- `web/js/app.js`: FreeCAD property groups and names (shown in tooltips), the same lock and `RESOLVE_TRIGGERS` semantics, toasts for notes, the report, mesh checks, and STL export (all bodies, or Ring / Sun / Planets with the same file-name tag as FreeCAD). Parameters persist in localStorage.
+- `web/js/view3d.js`: preview with instanced planets, animation (ring fixed, §4 kinematics), and a mid-height section.
+
+**Verification:**
+- `web/tests.html`: 66 checks.
+  - Fixtures: derived values, profiles, phasing and twist match with 0 error (twist ≤ 6e-17). Report lines match exactly. All 10 solver cases match, including the notes.
+  - Every mesh variant is a closed, consistently oriented manifold: default, large hex, Square, D-Flat, None, no chamfer, spur with hex planet bores.
+  - Default volumes: ring 529.9 (−0.45%), sun 355.8 (+0.48%), planet 12.73 (−0.12%) against the FreeCAD STL. Most of the gap is the 0.01 mm chord sag on the OD and bore circles.
+- `tests/test_stl_export.py` on browser exports, for the defaults, large hex (5×13T, 3 reversals), odd Zp (61/5×22), and D-flat with hex planet bores at e = 0.12:
+  - 2+N watertight bodies each time.
+  - Zero overlap on z-slices.
+  - Minimum transverse gap 0.147–0.150 at e = 0.15 (FreeCAD STL: 0.143–0.147) and 0.117–0.119 at e = 0.12.
 
 ## 8. Open ideas / not done
 

@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planetary Bearing</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='none' stroke='%23e8932b' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%23e8932b'/%3E%3Ccircle cx='16' cy='5.5' r='3' fill='%234a8de0'/%3E%3Ccircle cx='26.5' cy='16' r='3' fill='%234a8de0'/%3E%3Ccircle cx='16' cy='26.5' r='3' fill='%234a8de0'/%3E%3Ccircle cx='5.5' cy='16' r='3' fill='%234a8de0'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --panel-2: #f0f1f4; --line: #dfe2e8; --text: #1b1e24; --muted: #667085;
+    --accent: #d97a1e; --accent-ink: #ffffff; --warn: #b54708; --warn-bg: #fff4e5; --ok: #067647; --bad: #b42318;
+    --view: #e9ebef; --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121418; --panel: #1a1d23; --panel-2: #22262e; --line: #2e333c; --text: #e6e8ec; --muted: #9aa3b2;
+      --accent: #f0a050; --accent-ink: #1a1206; --warn: #fdb022; --warn-bg: #2b2112; --ok: #47cd89; --bad: #f97066;
+      --view: #181b20;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121418; --panel: #1a1d23; --panel-2: #22262e; --line: #2e333c; --text: #e6e8ec; --muted: #9aa3b2;
+    --accent: #f0a050; --accent-ink: #1a1206; --warn: #fdb022; --warn-bg: #2b2112; --ok: #47cd89; --bad: #f97066;
+    --view: #181b20;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .app { display: grid; grid-template-columns: 330px 1fr 420px; grid-template-rows: 48px 1fr; height: 100vh; }
+  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; padding: 0 16px;
+           background: var(--panel); border-bottom: 1px solid var(--line); min-width: 0; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .2px; white-space: nowrap; }
+  #status { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  #status.busy::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+                         margin-right: 6px; animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .spacer { flex: 1; }
+  button, select, input { font: inherit; color: inherit; }
+  button { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; white-space: nowrap; }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+
+  aside#params { background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; padding: 8px 0 24px; }
+  details { border-bottom: 1px solid var(--line); }
+  summary { cursor: pointer; padding: 9px 16px; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .5px;
+            color: var(--muted); user-select: none; }
+  .fields { padding: 2px 16px 12px; display: grid; gap: 7px; }
+  .f { display: grid; grid-template-columns: 1fr 120px; align-items: center; gap: 8px; }
+  .f label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .f label small { color: var(--muted); font-size: 11px; margin-left: 4px; }
+  .f input[type=number], .f select { width: 100%; padding: 4px 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel-2); }
+  .f input[type=number]:focus, .f select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .f input:disabled { color: var(--muted); }
+  .f input.changed { animation: flash 1.2s; }
+  @keyframes flash { 0% { background: var(--accent); color: var(--accent-ink); } }
+  .f .chk { justify-self: start; width: 16px; height: 16px; accent-color: var(--accent); }
+  .pair { display: grid; grid-template-columns: 62px 1fr; gap: 4px; }
+  .hint { color: var(--muted); font-size: 11px; line-height: 1.35; }
+
+  main { position: relative; background: var(--view); min-width: 0; min-height: 0; }
+  #view { position: absolute; inset: 0; }
+  #view canvas { display: block; }
+  .toolbar { position: absolute; left: 12px; top: 12px; right: 12px; display: flex; flex-wrap: wrap; gap: 6px; pointer-events: none; }
+  .toolbar > * { pointer-events: auto; }
+  .toolbar label.tg { display: inline-flex; align-items: center; gap: 5px; background: var(--panel); border: 1px solid var(--line);
+                      border-radius: 6px; padding: 5px 9px; cursor: pointer; user-select: none; }
+  .toolbar label.tg input { accent-color: var(--accent); margin: 0; }
+  .toolbar input[type=range] { width: 80px; accent-color: var(--accent); }
+  .legend { position: absolute; left: 12px; bottom: 12px; display: flex; gap: 12px; background: var(--panel); border: 1px solid var(--line);
+            border-radius: 6px; padding: 5px 10px; font-size: 12px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  #err3d { position: absolute; inset: 0; display: none; place-items: center; color: var(--muted); padding: 24px; text-align: center; }
+
+  aside#side { background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; display: flex; flex-direction: column; min-width: 0; }
+  .sect { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .sect h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 0 0 8px; font-weight: 600;
+             display: flex; align-items: center; gap: 8px; }
+  .sect h2 .spacer { flex: 1; }
+  .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .kpi { background: var(--panel-2); border-radius: 6px; padding: 7px 9px; min-width: 0; }
+  .kpi b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kpi span { color: var(--muted); font-size: 11px; }
+  .exp { display: flex; flex-wrap: wrap; gap: 6px; }
+  #report { font: 11.5px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; margin: 0; }
+  #report .h { color: var(--muted); font-weight: 700; display: block; margin-top: 6px; }
+  #report .w { color: var(--warn); background: var(--warn-bg); display: block; border-radius: 3px; padding: 0 4px; margin: 1px -4px; }
+  #report .n { color: var(--accent); display: block; }
+  table.checks { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 12px; }
+  table.checks td, table.checks th { padding: 3px 4px; text-align: right; border-bottom: 1px solid var(--line); }
+  table.checks th { color: var(--muted); font-weight: 500; }
+  table.checks td:first-child, table.checks th:first-child { text-align: left; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+
+  #toasts { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 10; max-width: min(420px, calc(100vw - 32px)); }
+  .toast { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 6px;
+           padding: 9px 12px; box-shadow: 0 6px 24px rgba(0,0,0,.18); animation: tin .2s; }
+  @keyframes tin { from { transform: translateY(8px); opacity: 0; } }
+
+  @media (max-width: 1100px) {
+    .app { grid-template-columns: 300px 1fr; grid-template-rows: 48px 1fr auto; height: auto; min-height: 100vh; }
+    main { min-height: 60vh; }
+    aside#side { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
+  }
+  @media (max-width: 720px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: auto 55vh auto auto; }
+    header { flex-wrap: wrap; padding: 8px 16px; gap: 8px; }
+    main { grid-row: 2; min-height: 0; }
+    aside#params { grid-row: 3; border-right: 0; }
+    aside#side { grid-row: 4; }
+    .f { grid-template-columns: 1fr 130px; }
+  }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>Planetary Bearing</h1>
+    <span id="status" class="busy">loading…</span>
+    <span class="spacer"></span>
+    <button id="reset" title="Restore default parameters">Defaults</button>
+    <button id="dl" class="primary" disabled title="Binary STL with all bodies, positioned for print-in-place">Download STL</button>
+  </header>
+
+  <aside id="params" aria-label="Parameters"></aside>
+
+  <main>
+    <div id="view"></div>
+    <div id="err3d">3D preview unavailable (WebGL / CDN). Parameters, report and export still work.</div>
+    <div class="toolbar">
+      <label class="tg"><input type="checkbox" id="anim"> Animate</label>
+      <label class="tg" title="Carrier speed">Speed <input type="range" id="speed" min="0.02" max="1" step="0.02" value="0.25"></label>
+      <label class="tg" title="Cut the preview at mid-height"><input type="checkbox" id="clip"> Section</label>
+      <label class="tg"><input type="checkbox" id="showRing" checked> Ring</label>
+      <label class="tg"><input type="checkbox" id="showSun" checked> Sun</label>
+      <label class="tg"><input type="checkbox" id="showPl" checked> Planets</label>
+      <button id="fit" title="Reset camera">Fit</button>
+    </div>
+    <div class="legend"><span><i style="background:#cccfd9"></i>Ring</span><span><i style="background:#f29926"></i>Sun</span><span><i style="background:#408ce6"></i>Planets</span></div>
+  </main>
+
+  <aside id="side">
+    <div class="sect">
+      <h2>Summary</h2>
+      <div class="kpis" id="kpis"></div>
+    </div>
+    <div class="sect">
+      <h2>Export</h2>
+      <div class="exp">
+        <button id="dlRing" disabled>Ring</button>
+        <button id="dlSun" disabled>Sun</button>
+        <button id="dlPl" disabled>Planets</button>
+      </div>
+      <p class="hint" id="exphint">One STL holds all bodies in place (print-in-place). Separate files keep the assembly positions.</p>
+    </div>
+    <div class="sect">
+      <h2>Mesh checks</h2>
+      <table class="checks" id="checks"></table>
+    </div>
+    <div class="sect" style="flex:1">
+      <h2>Report <span class="spacer"></span><button id="copy" style="padding:2px 8px;font-size:11px">Copy</button></h2>
+      <pre id="report"></pre>
+    </div>
+  </aside>
+</div>
+<div id="toasts" aria-live="polite"></div>
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>
