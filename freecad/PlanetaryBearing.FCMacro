@@ -1,0 +1,13 @@
+# Creates a new parametric herringbone planetary bearing in the active document.
+import sys, os, importlib
+import FreeCAD as App
+mod = os.path.join(App.getUserAppDataDir(), "Mod", "PlanetaryBearing")
+if mod not in sys.path:
+    sys.path.append(mod)
+import pb_math, PlanetaryBearing
+importlib.reload(pb_math); importlib.reload(PlanetaryBearing)
+obj = PlanetaryBearing.create()
+if App.GuiUp:
+    import FreeCADGui as Gui
+    Gui.Selection.clearSelection(); Gui.Selection.addSelection(obj)
+    Gui.SendMsgToActiveView("ViewFit")
