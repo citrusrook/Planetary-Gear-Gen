@@ -1,9 +1,13 @@
+#!/usr/bin/env python3
 """Static dev server for the web app (serves the repo root; open /web/).
 
 Also accepts `PUT /upload/<name>.stl` and saves the body to build/, so an STL exported
 in the browser can be checked with trimesh (tests/test_stl_export.py).
 
-    python tools/serve_web.py [port]
+    python3 tools/serve_web.py [port] [--host 0.0.0.0]
+
+--host 0.0.0.0 makes it reachable from other machines (e.g. a headless Debian box);
+the upload endpoint then accepts files from the whole network, so only do that on a trusted LAN.
 """
 import http.server
 import os
@@ -40,6 +44,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
-    print("serving %s on http://localhost:%d/web/" % (ROOT, port))
-    http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    args = sys.argv[1:]
+    host = "127.0.0.1"
+    if "--host" in args:
+        i = args.index("--host")
+        host = args[i + 1]
+        del args[i:i + 2]
+    port = int(args[0]) if args else 8765
+    srv = http.server.ThreadingHTTPServer((host, port), Handler)
+    shown = "localhost" if host in ("127.0.0.1", "0.0.0.0", "::") else host
+    print("serving %s on http://%s:%d/web/  (Ctrl-C to stop)" % (ROOT, shown, port))
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass

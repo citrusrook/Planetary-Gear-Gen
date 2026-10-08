@@ -9,6 +9,7 @@ Set 'Export Now' = true (or 'Export On Recompute') to write STL files.
 """
 import math
 import os
+import sys
 
 import FreeCAD as App
 import Part
@@ -74,6 +75,27 @@ RESOLVE_TRIGGERS = set(LOCKS) | {"OD", "ID", "PressureAngle", "PrintExpansion", 
                                  "ProfileShift", "MinPlanetGap", "MinWall", "MinModule"}
 
 
+def default_export_dir():
+    """<Documents>/PlanetaryBearing. On Linux the Documents folder comes from XDG user-dirs
+    (localised or moved, e.g. ~/Dokumente), falling back to ~/Documents, then ~."""
+    home = os.path.expanduser("~")
+    docs = os.path.join(home, "Documents")
+    if not sys.platform.startswith(("win", "darwin")):
+        cfg = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"), "user-dirs.dirs")
+        try:
+            with open(cfg, encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("XDG_DOCUMENTS_DIR="):
+                        v = line.split("=", 1)[1].strip().strip('"').replace("$HOME", home)
+                        if v and os.path.normpath(v) != os.path.normpath(home):
+                            docs = os.path.normpath(v)
+        except OSError:
+            pass
+        if not os.path.isdir(docs):
+            docs = home
+    return os.path.join(docs, "PlanetaryBearing")
+
+
 def _val(q):
     return q.Value if hasattr(q, "Value") else q
 
@@ -89,7 +111,7 @@ class PlanetaryBearing:
         for typ, name, grp, doc in OUT_PROPS:
             if name not in obj.PropertiesList:
                 obj.addProperty(typ, name, grp, doc, 8 | 1)   # Output | ReadOnly
-        obj.ExportFolder = os.path.join(os.path.expanduser("~"), "Documents", "PlanetaryBearing")
+        obj.ExportFolder = default_export_dir()
         self.notes = []
         self._busy = False
 
@@ -185,7 +207,7 @@ class PlanetaryBearing:
 
     def export(self, obj, parts, g):
         import MeshPart
-        folder = obj.ExportFolder or os.path.join(os.path.expanduser("~"), "Documents", "PlanetaryBearing")
+        folder = obj.ExportFolder or default_export_dir()
         os.makedirs(folder, exist_ok=True)
         tag = "OD%g_ID%g_H%g_S%dP%dx%dR%d_b%g_e%g" % (
             _val(obj.OD), _val(obj.ID), _val(obj.Height), g["Zs"], g["Zp"], g["N"], g["Zr"],

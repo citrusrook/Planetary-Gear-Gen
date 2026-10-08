@@ -189,6 +189,14 @@ Plain ES modules, no build step (Node isn't installed on Isaac's PC). three.js 0
   - Zero overlap on z-slices.
   - Minimum transverse gap 0.147–0.150 at e = 0.15 (FreeCAD STL: 0.143–0.147) and 0.117–0.119 at e = 0.12.
 
+### 7.2 Linux (Debian) support (2026-10-08)
+
+- `tools/install_freecad.py` used to always write to `~/.local/share/FreeCAD/v1-1` on Linux. That's wrong for Debian's apt FreeCAD (0.20 on Debian 12, 1.0 on Debian 13), which use `~/.local/share/FreeCAD` with no version folder. It is also wrong for Flatpak and Snap. The installer now detects every existing user folder and installs into each one (an upgraded machine has both layouts). It also supports `--list` / `--dest` / `--version`, and when run inside FreeCAD it uses `App.getUserAppDataDir()`.
+- The FreeCAD export folder defaults to the XDG Documents folder (from `user-dirs.dirs`). If that doesn't exist it falls back to `~/Documents`, then `~`.
+- Scripts have `#!/usr/bin/env python3` shebangs and executable bits. `tools/setup_venv.sh` creates `.venv`, because Debian blocks system-wide pip (PEP 668).
+- `tools/serve_web.py --host 0.0.0.0` serves to other machines.
+- `tests/test_portability.py` simulates Linux (apt, 1.1, upgraded, XDG_DATA_HOME, Flatpak, Snap), Windows and macOS home folders, and checks Python 3.11 syntax. These were not run on a real Debian machine yet: this PC has no WSL or Docker.
+
 ## 8. Open ideas / not done
 
 - Planet carrier or retention features: not needed, the herringbone holds the parts axially.

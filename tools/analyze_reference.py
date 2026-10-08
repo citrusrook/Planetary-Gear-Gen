@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Decode a gear-bearing STL: bodies, tooth counts (FFT of radius vs angle), planet orbit, helix phase.
 usage: python tools/analyze_reference.py reference/micro-gear_ring_22.stl   (needs trimesh, numpy)"""
 import sys

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Write golden JSON fixtures from the Python reference implementation.
 Use them to verify a port (JS/TS web app) produces identical geometry/solver output."""
 import json, os, sys
