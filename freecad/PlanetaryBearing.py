@@ -6,6 +6,9 @@ Edit any property in the Property panel - tooth counts / planet count are
 auto-corrected for compatibility (the property you just edited is held fixed
 if possible). Read the 'Report' property for phasing / wear / mesh checks.
 Set 'Export Now' = true (or 'Export On Recompute') to write STL files.
+
+V2 note: the taper (lazy-susan) and surface-texture options are built by the web app only;
+this object keeps the V1 geometry (the shared pb_math solver treats them as off).
 """
 import math
 import os
@@ -24,22 +27,22 @@ PLANET_BORES = ["Round", "Hex"]
 # (type, name, group, doc, default)
 PROPS = [
     ("App::PropertyLength", "OD", "1 Envelope", "Outer diameter of the ring", 31.7),
-    ("App::PropertyLength", "ID", "1 Envelope", "Inner (sun bore) diameter. Hex/Square = across flats", 22.0),
+    ("App::PropertyLength", "ID", "1 Envelope", "Inner (sun bore) diameter. Hex/Square = across flats", 18.0),
     ("App::PropertyLength", "Height", "1 Envelope", "Bearing height", 5.0),
 
-    ("App::PropertyIntegerConstraint", "PlanetCount", "2 Teeth", "Number of planets (equally spaced)", (24, 1, 120, 1)),
+    ("App::PropertyIntegerConstraint", "PlanetCount", "2 Teeth", "Number of planets (equally spaced)", (14, 1, 120, 1)),
     ("App::PropertyIntegerConstraint", "PlanetTeeth", "2 Teeth", "Planet tooth count", (4, 4, 80, 1)),
-    ("App::PropertyIntegerConstraint", "SunTeeth", "2 Teeth", "Sun tooth count", (56, 6, 300, 1)),
-    ("App::PropertyIntegerConstraint", "RingTeeth", "2 Teeth", "Ring (internal) tooth count = Sun + 2*Planet", (64, 14, 460, 1)),
+    ("App::PropertyIntegerConstraint", "SunTeeth", "2 Teeth", "Sun tooth count", (31, 6, 300, 1)),
+    ("App::PropertyIntegerConstraint", "RingTeeth", "2 Teeth", "Ring (internal) tooth count = Sun + 2*Planet", (39, 14, 460, 1)),
     ("App::PropertyFloatConstraint", "PressureAngle", "2 Teeth", "Pressure angle (deg)", (22.0, 10.0, 35.0, 0.5)),
 
     ("App::PropertyFloatConstraint", "HelixAngle", "3 Herringbone", "Helix angle at pitch cylinder (deg). 0 = spur", (30.0, 0.0, 60.0, 1.0)),
     ("App::PropertyIntegerConstraint", "Reversals", "3 Herringbone", "How many times the helix reverses over the height (1 = classic V, 0 = plain helical)", (1, 0, 50, 1)),
 
-    ("App::PropertyFloatConstraint", "PrintExpansion", "4 Print tolerance", "Total flank gap per contact in mm (0.01 steps). Each of the 2 mating parts is pulled back by half. Also enlarges bores by half", (0.15, -0.5, 1.0, 0.01)),
-    ("App::PropertyFloatConstraint", "RootClearance", "4 Print tolerance", "Radial clearance tooth tip -> mating root in mm (separate from PrintExpansion)", (0.15, 0.0, 1.0, 0.01)),
+    ("App::PropertyFloatConstraint", "PrintExpansion", "4 Print tolerance", "Total flank gap per contact in mm (0.01 steps). Each of the 2 mating parts is pulled back by half. Also enlarges bores by half", (0.1, -0.5, 1.0, 0.01)),
+    ("App::PropertyFloatConstraint", "RootClearance", "4 Print tolerance", "Radial clearance tooth tip -> mating root in mm (separate from PrintExpansion)", (0.1, 0.0, 1.0, 0.01)),
     ("App::PropertyFloatConstraint", "EdgeChamfer", "4 Print tolerance", "45 deg chamfer on tooth tips, OD and bore edges (top & bottom). Helps elephant foot / print-in-place", (0.3, 0.0, 2.0, 0.05)),
-    ("App::PropertyFloatConstraint", "TipLand", "4 Print tolerance", "Minimum tooth top land in mm - pointed tips are truncated to this", (0.1, 0.0, 1.0, 0.01)),
+    ("App::PropertyFloatConstraint", "TipLand", "4 Print tolerance", "Minimum tooth top land in mm - pointed tips are truncated to this", (0.025, 0.0, 1.0, 0.005)),
 
     ("App::PropertyEnumeration", "SunBoreShape", "5 Bores", "Sun bore shape (size = ID)", SUN_BORES),
     ("App::PropertyFloatConstraint", "SunBoreFlat", "5 Bores", "D-Flat: distance from centre to flat as fraction of ID (0.4 = 5mm shaft w/ 4.5 flat)", (0.4, 0.05, 0.5, 0.01)),
@@ -54,7 +57,7 @@ PROPS = [
     ("App::PropertyFloat", "ProfileShift", "7 Advanced", "Planet profile shift coefficient x", 0.0),
     ("App::PropertyFloatConstraint", "MinPlanetGap", "7 Advanced", "Minimum gap between neighbouring planet tips (mm)", (0.3, 0.0, 5.0, 0.05)),
     ("App::PropertyFloatConstraint", "MinWall", "7 Advanced", "Minimum ring wall / sun rim (mm)", (0.5, 0.0, 10.0, 0.05)),
-    ("App::PropertyFloatConstraint", "MinModule", "7 Advanced", "Smallest module the solver may use (mm)", (0.4, 0.05, 10.0, 0.05)),
+    ("App::PropertyFloatConstraint", "MinModule", "7 Advanced", "Smallest module the solver may use (mm)", (0.5, 0.05, 10.0, 0.05)),
     ("App::PropertyFloatConstraint", "SurfaceTolerance", "7 Advanced", "Max helix approximation error for lofts (mm)", (0.005, 0.0005, 0.05, 0.0005)),
 
     ("App::PropertyPath", "ExportFolder", "8 Export", "Folder for STL export", ""),

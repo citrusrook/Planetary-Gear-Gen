@@ -7,6 +7,11 @@ Conventions
   * S0 profile shift: planet +x, sun -x, ring +x  -> standard centre distances kept
   * expansion e (mm): every mating surface is pulled back by e/2  (total gap e per contact)
   * root clearance c (mm): extra radial gap between a tip and the mating root
+  * taper (V2): the profile shift varies linearly with height (beveloid / conical involute teeth),
+    x(z) = x0 + dx(z). Every transverse slice is still a standard S0 set (same base circles and
+    centre distance), so the mesh stays exact; planets become cones, sun/ring teeth taper to match.
+  * surface textures (V2): knurl / dimples / ovals cut into the ring OD and the sun bore; their depth
+    counts against the ring wall / sun rim.
 """
 import math
 from math import gcd, pi, tan, cos, sin, acos, sqrt
@@ -25,8 +30,10 @@ def lcm(a, b):
 # --------------------------------------------------------------------------
 #  Basic geometry derived from the parameters
 # --------------------------------------------------------------------------
-def derive(p, Zs=None, Zp=None, N=None):
-    """Return dict of derived geometry for parameter dict p (optionally overriding teeth/N)."""
+def derive(p, Zs=None, Zp=None, N=None, dx=0.0):
+    """Return dict of derived geometry for parameter dict p (optionally overriding teeth/N).
+
+    dx: extra profile shift for one height of a tapered bearing (see taper_dx); x = x0 + dx."""
     Zs = p["Zs"] if Zs is None else Zs
     Zp = p["Zp"] if Zp is None else Zp
     N = p["N"] if N is None else N
@@ -42,8 +49,11 @@ def derive(p, Zs=None, Zp=None, N=None):
         # practical (DIN 3960 style) limit: allow slight undercut, Z'min = 5/6 * Zmin
         z_th = 2.0 / sin(al) ** 2
         x = max(0.0, (5.0 / 6.0 * z_th - Zp) / z_th)
+        # taper: centre the range so the thin end of the planet sits at the practical undercut limit
+        x += taper_half(p, m)
     else:
         x = p["shift"]
+    x += dx
     rs, rp, rr = m * Zs / 2, m * Zp / 2, m * Zr / 2
     a = rs + rp
     g = dict(Zs=Zs, Zp=Zp, Zr=Zr, N=N, m=m, x=x, alpha=al, c=c, d=d,
@@ -95,6 +105,72 @@ def bore_outer_radius(shape, dia, comp):
     return r
 
 
+TEX_TYPES = ("None", "Straight knurl", "Diagonal knurl", "Diamond knurl", "Dimples", "Ovals")
+
+
+def taper_half(p, m):
+    """Half of the profile-shift range caused by the taper: dx(z) spans [-half, +half]."""
+    t = p.get("taper", 0.0)
+    if not t:
+        return 0.0
+    return tan(math.radians(t)) / m * p["H"] * (0.25 if p.get("taper_mirror", False) else 0.5)
+
+
+def taper_dx(p, m, z):
+    """Profile-shift offset at height z. Planet radii grow with +dx (sun/ring follow).
+
+    single:   planet wide at the bottom (flip: at the top)
+    mirrored: planet fattest at mid-height (flip: thinnest), a double cone that locks both ways"""
+    t = p.get("taper", 0.0)
+    if not t:
+        return 0.0
+    H = p["H"]
+    s = (H / 4 - abs(z - H / 2)) if p.get("taper_mirror", False) else (H / 2 - z)
+    if p.get("taper_flip", False):
+        s = -s
+    return tan(math.radians(t)) / m * s
+
+
+def taper_mode(p):
+    if p.get("taper_mirror", False):
+        if p.get("taper_flip", False):
+            return "mirrored, planets thinnest at mid-height"
+        return "mirrored, planets fattest at mid-height"
+    return "single, planets wide at the top" if p.get("taper_flip", False) else "single, planets wide at the bottom"
+
+
+def tex_depth(p, which):
+    """Radial depth a surface texture cuts in ('od' = ring OD, 'bore' = sun bore; Round bores only)."""
+    if p.get(which + "_tex", "None") == "None":
+        return 0.0
+    if which == "bore" and (p.get("sun_bore_shape") != "Round" or p.get("ID", 0) <= 0):
+        return 0.0
+    return max(0.0, p.get(which + "_tex_depth", 0.0))
+
+
+def tex_layout(p, which, R, chamfer=0.3):
+    """Feature count around and rows over the height for a texture on a cylinder of radius R.
+    Shared with the web mesh builder. Returns dict(n, rows, pz, ext_z, w, L)."""
+    kind = p.get(which + "_tex", "None")
+    pitch = max(0.05, p.get(which + "_tex_pitch", 1.0))
+    n = max(3, int(round(2 * pi * R / pitch)))
+    out = dict(n=n, rows=0, pz=0.0, ext_z=0.0, w=0.0, L=0.0)
+    if kind in ("Dimples", "Ovals"):
+        w = max(0.05, p.get(which + "_tex_size", 1.0))
+        L = w * max(1.0, p.get(which + "_tex_aspect", 1.0)) if kind == "Ovals" else w
+        psi = math.radians(p.get(which + "_tex_angle", 0.0)) if kind == "Ovals" else 0.0
+        ext_z = L * abs(cos(psi)) + w * abs(sin(psi))
+        pz = 0.5 * sqrt(3.0) * pitch * ext_z / w
+        H = p["H"]
+        span = H - 2 * (chamfer + ext_z / 2)
+        if span >= 0:
+            rows = int(span // pz) + 1
+        else:
+            rows = 1 if H > ext_z else 0
+        out.update(rows=rows, pz=pz, ext_z=ext_z, w=w, L=L)
+    return out
+
+
 # --------------------------------------------------------------------------
 #  Tooth-count solver
 # --------------------------------------------------------------------------
@@ -115,27 +191,30 @@ def feasible(p, Zs, Zp, N, why=False):
         if not why:
             return False, reasons
     g = derive(p, Zs, Zp, N)
+    half = taper_half(p, g["m"])
+    g_hi = derive(p, Zs, Zp, N, dx=half) if half else g     # widest planet / deepest ring root
+    g_lo = derive(p, Zs, Zp, N, dx=-half) if half else g    # thinnest planet
     if g["m"] < p.get("min_module", 0.0) - 1e-12:
         reasons.append("module %.3f < min printable module %.3f" % (g["m"], p.get("min_module", 0.0)))
         if not why:
             return False, reasons
     if N >= 2:
-        gap = 2 * g["a"] * sin(pi / N) - 2 * g["ra_p"]
+        gap = 2 * g["a"] * sin(pi / N) - 2 * g_hi["ra_p"]
         if gap < p["min_planet_gap"] - 1e-9:
             reasons.append("adjacent planet tips gap %.3f < %.3f mm" % (gap, p["min_planet_gap"]))
             if not why:
                 return False, reasons
-    wall = p["OD"] / 2 - g["ro_r"]
+    wall = p["OD"] / 2 - g_hi["ro_r"] - tex_depth(p, "od")
     if wall < p["min_wall"] - 1e-9:
         reasons.append("ring wall %.3f < %.3f mm" % (wall, p["min_wall"]))
         if not why:
             return False, reasons
-    rim = g["rf_s"] - bore_outer_radius(p["sun_bore_shape"], p["ID"], g["d"])
+    rim = g_hi["rf_s"] - bore_outer_radius(p["sun_bore_shape"], p["ID"], g["d"]) - tex_depth(p, "bore")
     if rim < p["min_wall"] - 1e-9:
         reasons.append("sun rim %.3f < %.3f mm" % (rim, p["min_wall"]))
         if not why:
             return False, reasons
-    if g["rf_s"] <= 0 or g["rf_p"] <= 0:
+    if g_hi["rf_s"] <= 0 or g_lo["rf_p"] <= 0:
         reasons.append("negative root radius")
     return (len(reasons) == 0), reasons
 
@@ -321,6 +400,16 @@ def build_profiles(p, g):
     return out
 
 
+def taper_profiles(p, g):
+    """Profiles at the taper extremes: (g_lo, prof_lo, g_hi, prof_hi), or None without taper."""
+    half = taper_half(p, g["m"])
+    if not half:
+        return None
+    g_lo = derive(p, g["Zs"], g["Zp"], g["N"], dx=-half)
+    g_hi = derive(p, g["Zs"], g["Zp"], g["N"], dx=half)
+    return g_lo, build_profiles(p, g_lo), g_hi, build_profiles(p, g_hi)
+
+
 def external_polygon(prof, rot=0.0, arc_pts=6):
     """Closed polygon (Nx2) of an external gear; tooth 0 centred on +x axis, rotated by rot."""
     Z, r, t, rf = prof["Z"], prof["r"], prof["t"], prof["rf"]
@@ -462,18 +551,80 @@ def report(p, g, prof, notes=()):
              (pl["ra"], " (truncated, pointed)" if pl["ra"] < g["ra_p"] - 1e-6 else "", pl["rf"],
               su["ra"], " (truncated, pointed)" if su["ra"] < g["ra_s"] - 1e-6 else "", su["rf"],
               ri["ri"], ri["ro"]))
-    wall = p["OD"] / 2 - ri["ro"]
-    rim = su["rf"] - bore_outer_radius(p["sun_bore_shape"], p["ID"], g["d"])
+    tp = taper_profiles(p, g)
+    hi = tp[3] if tp else prof                   # widest planet / deepest roots
+    lo = tp[1] if tp else prof
+    wall = p["OD"] / 2 - hi["ring"]["ro"] - tex_depth(p, "od")
+    rim = hi["sun"]["rf"] - bore_outer_radius(p["sun_bore_shape"], p["ID"], g["d"]) - tex_depth(p, "bore")
     L.append("Ring wall %.3f mm, sun rim %.3f mm (min %.2f)" % (wall, rim, p["min_wall"]))
     if p["planet_bore_d"] > 0:
-        prim = pl["rf"] - bore_outer_radius(p["planet_bore_shape"], p["planet_bore_d"], g["d"])
+        prim = lo["planet"]["rf"] - bore_outer_radius(p["planet_bore_shape"], p["planet_bore_d"], g["d"])
         L.append("Planet rim around bore %.3f mm%s" % (prim, "  (WARNING thin)" if prim < 0.4 else ""))
     if N >= 2:
-        gap = 2 * g["a"] * sin(pi / N) - 2 * pl["ra"]
+        gap = 2 * g["a"] * sin(pi / N) - 2 * hi["planet"]["ra"]
         L.append("Planet-to-planet tip gap %.3f mm (min %.2f)" % (gap, p["min_planet_gap"]))
     L.append("Clearances: flank gap per contact %.3f mm (%.3f per part), tip-root %.3f + %.3f mm" %
              (p["expansion"], g["d"], g["c"], p["expansion"]))
+    if tp:
+        L += report_taper(p, g, *tp)
+    L += report_texture(p, g)
     ok, why = feasible(p, Zs, Zp, N, why=True)
     for w in why:
         L.append("WARNING: " + w)
+    return L
+
+
+def report_taper(p, g, g_lo, plo, g_hi, phi):
+    L = ["=== Taper ==="]
+    L.append("Taper %.1f deg (%s): planet profile shift x %+.3f .. %+.3f, mid-height %+.3f" %
+             (p["taper"], taper_mode(p), g_lo["x"], g_hi["x"], g["x"]))
+    L.append("Planet tip %.4f .. %.4f root %.4f .. %.4f | Sun tip %.4f .. %.4f root %.4f .. %.4f | "
+             "Ring tip %.4f .. %.4f root %.4f .. %.4f" %
+             (plo["planet"]["ra"], phi["planet"]["ra"], plo["planet"]["rf"], phi["planet"]["rf"],
+              phi["sun"]["ra"], plo["sun"]["ra"], phi["sun"]["rf"], plo["sun"]["rf"],
+              plo["ring"]["ri"], phi["ring"]["ri"], plo["ring"]["ro"], phi["ring"]["ro"]))
+    a_lo, b_lo = contact_ratios(g_lo, plo)
+    a_hi, b_hi = contact_ratios(g_hi, phi)
+    L.append("Transverse contact ratio thin end / wide end: sun-planet %.3f / %.3f, ring-planet %.3f / %.3f%s" %
+             (a_lo, a_hi, b_lo, b_hi, "  (WARNING <1.0)" if min(a_lo, a_hi, b_lo, b_hi) < 1.0 else ""))
+    z_th = 2.0 / sin(g["alpha"]) ** 2
+    lim_p = (5.0 / 6.0 * z_th - g["Zp"]) / z_th
+    lim_s = (5.0 / 6.0 * z_th - g["Zs"]) / z_th
+    if g_lo["x"] < lim_p - 1e-9:
+        L.append("WARNING: planet undercut at the thin end (x %+.3f < practical limit %+.3f): weaker tooth roots"
+                 % (g_lo["x"], lim_p))
+    if -g_hi["x"] < lim_s - 1e-9:
+        L.append("WARNING: sun undercut where the planets are widest (sun x %+.3f < practical limit %+.3f)"
+                 % (-g_hi["x"], lim_s))
+    if phi["planet"]["ra"] < g_hi["rp"] + g_hi["m"] * (1 + g_hi["x"]) - g_hi["d"] - 1e-6:
+        L.append("Planet tips are truncated (pointed) at the wide end - normal for a strong taper")
+    return L
+
+
+def report_texture(p, g):
+    L = []
+    for which, label, R in (("od", "Outer (ring OD)", p["OD"] / 2), ("bore", "Inner (sun bore)", p["ID"] / 2 + g["d"])):
+        kind = p.get(which + "_tex", "None")
+        if kind == "None":
+            continue
+        if not L:
+            L.append("=== Surface texture ===")
+        if tex_depth(p, which) == 0.0:
+            L.append("%s: %s ignored - needs a Round sun bore" % (label, kind))
+            continue
+        lay = tex_layout(p, which, R, p.get("chamfer", 0.3))
+        d = p[which + "_tex_depth"]
+        if kind.endswith("knurl"):
+            ang = "" if kind == "Straight knurl" else ", helix %.1f deg" % p[which + "_tex_angle"]
+            L.append("%s: %s, depth %.3f mm, pitch %.2f mm -> %d around%s" %
+                     (label, kind, d, p[which + "_tex_pitch"], lay["n"], ang))
+        else:
+            if kind == "Dimples":
+                size = "%.2f mm" % lay["w"]
+            else:
+                size = "%.2f x %.2f mm, tilt %.1f deg" % (lay["w"], lay["L"], p[which + "_tex_angle"])
+            L.append("%s: %s %s, depth %.3f mm, pitch %.2f mm -> %d around x %d row(s)" %
+                     (label, kind, size, d, p[which + "_tex_pitch"], lay["n"], lay["rows"]))
+            if lay["rows"] == 0:
+                L.append("WARNING: %s are taller than the height between the chamfers - none placed" % kind.lower())
     return L

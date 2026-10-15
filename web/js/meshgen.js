@@ -1,4 +1,6 @@
 // Direct triangle-mesh builder (no B-rep): every part is a twisted extrusion of 2D loops.
+//  * V2: tapered teeth = a different profile (shift x0 + dx(z)) per z section on a fixed vertex layout;
+//    textured OD / bore = loops whose radius depends on angle and height (knurl, dimples, ovals)
 // Mirrors freecad/PlanetaryBearing.py build_parts(); see HANDOFF.md §7.
 //  * each loop (gear outline, toothed ring hole, OD circle, bore) gets its own z sections:
 //    helix sections (sag <= surface_tol, same rule as twisted_loft) + chamfer sections near faces
@@ -51,30 +53,55 @@ function dedupe(R, A) {
 // Tooth templates (polar, tooth centred on angle 0) so a chamfer can be clamped along the flanks.
 // External: right flank (r up, -t), tip arc, left flank (r down, +t), root arc  -> material inside.
 // Ring hole: down flank (r down, -psi), tip arc at ri, up flank (+psi), root arc -> material outside.
-function toothTemplate(prof, tol, flankTol, ring) {
-  const { Z, r, t } = prof;
-  const ki = simplifyFlank(r, t, flankTol);
-  const fr = ki.map((i) => r[i]), ft = ki.map((i) => t[i]);
-  const n = fr.length, pitch = 2 * PI / Z;
-  const R = [], A = [];
-  if (!ring) {
+//
+// A tapered bearing has a different profile in every z section, but the walls join section j to j+1
+// vertex-by-vertex, so the template *layout* (kept flank samples, arc point counts, dropped points)
+// is fixed once by toothLayout() from all the profiles that will be used, then filled per profile.
+const arcN = (r, span, tol) => max(1, ceil(abs(span) / dphiFor(r, tol)));
+
+function toothLayout(profs, tol, flankTol, ring) {
+  const p0 = profs[0], pitch = 2 * PI / p0.Z;
+  const ki = simplifyFlank(p0.r, p0.t, flankTol);        // same radial parametrisation in every section
+  let nTip = 1, nRoot = 1;
+  for (const pr of profs) {
+    const n = pr.r.length;
+    if (!ring) { nTip = max(nTip, arcN(pr.r[n - 1], 2 * pr.t[n - 1], tol)); nRoot = max(nRoot, arcN(pr.r[0], pitch - 2 * pr.t[0], tol)); }
+    else { nTip = max(nTip, arcN(pr.r[0], 2 * pr.t[0], tol)); nRoot = max(nRoot, arcN(pr.r[n - 1], pitch - 2 * pr.t[n - 1], tol)); }
+  }
+  const L = { ki, nTip, nRoot, ring, Z: p0.Z, pitch, keep: null };
+  // drop coincident neighbours (zero tip land), including across the tooth boundary - decided on p0
+  const T = rawTemplate(p0, L);
+  L.keep = T.r.map((_, i) => {
+    const j = i + 1 < T.r.length ? i + 1 : 0, aj = j ? T.a[j] : T.a[0] + pitch;
+    return hypot(T.r[i] * cos(T.a[i]) - T.r[j] * cos(aj), T.r[i] * sin(T.a[i]) - T.r[j] * sin(aj)) > 1e-9;
+  });
+  return L;
+}
+
+function arcInterior(R, A, r, a0, a1, n) { for (let j = 1; j < n; j++) { R.push(r); A.push(a0 + (a1 - a0) * j / n); } }
+
+function rawTemplate(prof, L) {
+  const fr = L.ki.map((i) => prof.r[i]), ft = L.ki.map((i) => prof.t[i]);
+  const n = fr.length, pitch = L.pitch, R = [], A = [];
+  if (!L.ring) {
     for (let i = 0; i < n; i++) { R.push(fr[i]); A.push(-ft[i]); }
-    pushArc(R, A, fr[n - 1], -ft[n - 1], ft[n - 1], tol, false, false);
+    arcInterior(R, A, fr[n - 1], -ft[n - 1], ft[n - 1], L.nTip);
     for (let i = n - 1; i >= 0; i--) { R.push(fr[i]); A.push(ft[i]); }
-    pushArc(R, A, fr[0], ft[0], pitch - ft[0], tol, false, false);    // root arc at r[0] (closure)
+    arcInterior(R, A, fr[0], ft[0], pitch - ft[0], L.nRoot);          // root arc at r[0] (closure)
   } else {
     for (let i = n - 1; i >= 0; i--) { R.push(fr[i]); A.push(-ft[i]); }
-    pushArc(R, A, fr[0], -ft[0], ft[0], tol, false, false);
+    arcInterior(R, A, fr[0], -ft[0], ft[0], L.nTip);
     for (let i = 0; i < n; i++) { R.push(fr[i]); A.push(ft[i]); }
-    pushArc(R, A, fr[n - 1], ft[n - 1], pitch - ft[n - 1], tol, false, false);
+    arcInterior(R, A, fr[n - 1], ft[n - 1], pitch - ft[n - 1], L.nRoot);
   }
-  // drop coincident neighbours (zero tip land), including across the tooth boundary
-  const r2 = [], a2 = [];
-  for (let i = 0; i < R.length; i++) {
-    const j = i + 1 < R.length ? i + 1 : 0, aj = j ? A[j] : A[0] + pitch;
-    if (hypot(R[i] * cos(A[i]) - R[j] * cos(aj), R[i] * sin(A[i]) - R[j] * sin(aj)) > 1e-9) { r2.push(R[i]); a2.push(A[i]); }
-  }
-  return { r: Float64Array.from(r2), a: Float64Array.from(a2), Z, pitch, prof };
+  return { r: R, a: A };
+}
+
+function toothTemplate(prof, L) {
+  const T = rawTemplate(prof, L);
+  const r = [], a = [];
+  for (let i = 0; i < T.r.length; i++) if (L.keep[i]) { r.push(T.r[i]); a.push(T.a[i]); }
+  return { r: Float64Array.from(r), a: Float64Array.from(a), Z: L.Z, pitch: L.pitch, prof };
 }
 
 /** Chamfered section of a tooth template: the part beyond the cone radius Rc is replaced by an
@@ -100,18 +127,24 @@ function clampTemplate(T, Rc, ring) {
   return { r: R, a: A };
 }
 
-/** Loop whose section at distance dz from the nearest face comes from a tooth template. */
-function toothLoop(T, ring, Rc_of_dz) {
-  const M = T.r.length * T.Z, cache = new Map();
-  const at = (dz) => {
-    const Rc = Rc_of_dz(dz);
+/** Loop of Z teeth. profAt(z) gives this gear's profile at height z (one profile without taper);
+ *  Rc_of(dz, prof) the chamfer cone radius at distance dz from a face (null = none). */
+function toothLoop(L, profAt, Rc_of) {
+  const M = L.keep.filter(Boolean).length * L.Z, tcache = new Map(), cache = new Map();
+  const at = (z, dz) => {
+    const prof = profAt(z);
+    let T = tcache.get(prof);
+    if (!T) { T = toothTemplate(prof, L); tcache.set(prof, T); }
+    const Rc = Rc_of(dz, prof);
+    let byRc = cache.get(prof);
+    if (!byRc) { byRc = new Map(); cache.set(prof, byRc); }
     const key = Rc === null ? "base" : Rc;
-    if (cache.has(key)) return cache.get(key);
-    const S = Rc === null ? T : clampTemplate(T, Rc, ring);
+    if (byRc.has(key)) return byRc.get(key);
+    const S = Rc === null ? T : clampTemplate(T, Rc, L.ring);
     const r = new Float64Array(M), a = new Float64Array(M), m = T.r.length;
-    for (let k = 0; k < T.Z; k++) for (let i = 0; i < m; i++) { r[k * m + i] = S.r[i]; a[k * m + i] = S.a[i] + k * T.pitch; }
+    for (let k = 0; k < L.Z; k++) for (let i = 0; i < m; i++) { r[k * m + i] = S.r[i]; a[k * m + i] = S.a[i] + k * L.pitch; }
     const out = { r, a };
-    cache.set(key, out);
+    byRc.set(key, out);
     return out;
   };
   return { M, at };
@@ -120,13 +153,89 @@ function toothLoop(T, ring, Rc_of_dz) {
 /** Plain loop {r,a} with a radial clamp (exact for circles; flats of polygons become arcs). */
 function radialLoop(L, clamp) {
   const M = L.r.length;
-  return { M, at: (dz) => ({ r: L.r.map((v) => clamp(v, dz)), a: L.a }) };
+  return { M, at: (z, dz) => ({ r: L.r.map((v) => clamp(v, dz)), a: L.a }) };
 }
 
 /** External gear outline, CCW, tooth 0 centred on +x (no chamfer). */
-export function externalLoop(prof, tol, flankTol) { return toothLoop(toothTemplate(prof, tol, flankTol, false), false, () => null).at(1); }
+export function externalLoop(prof, tol, flankTol) { return toothLoop(toothLayout([prof], tol, flankTol, false), () => prof, () => null).at(0, 1); }
 /** Toothed hole of the ring, CCW, ring tooth 0 centred on +x (no chamfer). */
-export function ringHoleLoop(prof, tol, flankTol) { return toothLoop(toothTemplate(prof, tol, flankTol, true), true, () => null).at(1); }
+export function ringHoleLoop(prof, tol, flankTol) { return toothLoop(toothLayout([prof], tol, flankTol, true), () => prof, () => null).at(0, 1); }
+
+// ---------------------------------------------------------------- surface textures
+// A textured cylinder (ring OD: cut inward, sign -1; sun bore: cut outward, sign +1) is a loop whose
+// radius depends on angle and height: r = R0 + sign * depth * f(theta, z), f in [0,1] = cut fraction.
+const tri01 = (u) => 1 - abs(2 * (u - Math.floor(u)) - 1);     // 0 at integer u (crest), 1 at half (groove)
+
+/** Returns {loop, zs} for a textured cylinder, or null for "None". clamp(r, dz) adds the chamfer. */
+function textureLoop(p, which, R0, sign, H, chamferC, clamp) {
+  const kind = p[which + "_tex"] ?? "None";
+  const depth = pm.texDepth(p, which);
+  if (kind === "None" || !(depth > 0)) return null;
+  const lay = pm.texLayout(p, which, R0, p.chamfer ?? 0.3);
+  const n = lay.n, pc = 2 * PI * R0 / n;                       // circumferential pitch at the surface
+  let M, zs, f;
+  if (kind.endsWith("knurl")) {
+    const k = 8;                                                // grid steps per pitch: crests/grooves on vertices
+    M = n * k;
+    const tpsi = Math.tan((p[which + "_tex_angle"] ?? 30) * PI / 180);
+    if (kind === "Straight knurl" || !(abs(tpsi) > 1e-6)) {
+      zs = mergeZ([0, H], chamferSections(H, chamferC));
+      f = (i) => tri01(i / k);
+    } else {
+      const dz = Math.min(H / 2, Math.max(0.02, pc / (k * abs(tpsi))));   // phase moves one grid step per section
+      const grid = [];
+      for (let z = 0; z < H - 1e-9; z += dz) grid.push(z);
+      zs = mergeZ(grid, [H], chamferSections(H, chamferC));
+      const sh = (z) => z * tpsi / pc;
+      f = kind === "Diagonal knurl" ? (i, z) => tri01(i / k + sh(z)) : (i, z) => max(tri01(i / k + sh(z)), tri01(i / k - sh(z)));
+    }
+  } else {                                                      // Dimples / Ovals: spherical-cap pockets, staggered rows
+    const w = lay.w, Lz = lay.L, step = Math.max(0.03, Math.min(w / 8, pc / 6, 0.25));
+    M = Math.max(n * 4, ceil(2 * PI * R0 / step));
+    const nz = Math.max(2, ceil(H / step));
+    zs = mergeZ(Array.from({ length: nz + 1 }, (_, j) => H * j / nz), chamferSections(H, chamferC));
+    const psi = kind === "Ovals" ? (p[which + "_tex_angle"] ?? 0) * PI / 180 : 0;
+    const cs = cos(psi), sn = sin(psi);
+    const d = Math.min(depth, 0.499 * w), Rs = (w * w / 4 + d * d) / (2 * d);
+    const rows = [];
+    for (let j = 0; j < lay.rows; j++) rows.push(H / 2 + (j - (lay.rows - 1) / 2) * lay.pz);
+    const extS = w * abs(cs) + Lz * abs(sn), reachCols = ceil(extS / 2 / pc) + 1;
+    f = (i, z) => {
+      let best = 0;
+      const th = 2 * PI * i / M;
+      for (let j = 0; j < rows.length; j++) {
+        const t = z - rows[j];
+        if (abs(t) > lay.ext_z / 2 + 1e-9) continue;
+        const off = j % 2 ? 0.5 : 0;
+        const c0 = Math.round(th / (2 * PI / n) - off);
+        for (let c = c0 - reachCols; c <= c0 + reachCols; c++) {
+          let dth = th - (c + off) * 2 * PI / n;
+          dth -= 2 * PI * Math.round(dth / (2 * PI));
+          const s = dth * R0;
+          const aS = s * cs - t * sn, aL = s * sn + t * cs;          // short / long axis coordinates
+          const q = (aS / (w / 2)) ** 2 + (aL / (Lz / 2)) ** 2;
+          if (q >= 1) continue;
+          const rho = Math.sqrt(q) * w / 2;
+          const dep = Math.sqrt(Rs * Rs - rho * rho) - (Rs - d);
+          if (dep > best) best = dep;
+        }
+      }
+      return best / depth;
+    };
+  }
+  const A = Float64Array.from({ length: M }, (_, i) => 2 * PI * i / M);
+  const cache = new Map();
+  const at = (z, dz) => {
+    const key = z;
+    if (cache.has(key)) return cache.get(key);
+    const r = new Float64Array(M);
+    for (let i = 0; i < M; i++) r[i] = clamp(R0 + sign * depth * f(i, z), dz);
+    const out = { r, a: A };
+    cache.set(key, out);
+    return out;
+  };
+  return { loop: { M, at }, zs };
+}
 
 export function circleLoop(r, tol) {
   const n = max(24, ceil(2 * PI / dphiFor(r, tol)));
@@ -201,7 +310,7 @@ function mergeZ(...lists) {
 
 // ---------------------------------------------------------------- body assembly
 /**
- * loops: [{loop:{M, at(dz)->{r,a}}, zs, twist(z)->angle, hole:bool}], first loop is the outer boundary.
+ * loops: [{loop:{M, at(z, dz)->{r,a}}, zs, twist(z)->angle, hole:bool}], first loop is the outer boundary.
  * Returns {pos: Float64Array, idx: Uint32Array}
  */
 function buildBody(loops, H) {
@@ -215,7 +324,7 @@ function buildBody(loops, H) {
     L.base = base;
     let o = base * 3;
     for (const z of L.zs) {
-      const tw = L.twist(z), { r, a } = L.loop.at(min(z, H - z));
+      const tw = L.twist(z), { r, a } = L.loop.at(z, min(z, H - z));
       for (let i = 0; i < M; i++) {
         const ang = a[i] + tw;
         pos[o++] = r[i] * cos(ang); pos[o++] = r[i] * sin(ang); pos[o++] = z;
@@ -289,12 +398,38 @@ function repairDropped(t, loops, which) {
 }
 
 // ---------------------------------------------------------------- full bearing
+/** z sections where the taper changes the profile: |dx| per step <= 0.08 (plus the mirror kink).
+ *  The profile moves almost linearly with x, so the straight walls between sections deviate far
+ *  less than mesh_dev; finer steps only add facets. */
+function taperSections(p, m, H) {
+  const t = p.taper ?? 0;
+  if (!t) return [];
+  const step = Math.min(H / 4, Math.max(0.04, 0.08 * m / Math.tan(abs(t) * PI / 180)));
+  const n = ceil(H / step), out = [];
+  for (let j = 0; j <= n; j++) out.push(H * j / n);
+  if (p.taper_mirror) out.push(H / 2);
+  return out;
+}
+
 export function buildBearing(p) {
   const T0 = performance.now();
   const H = p.H, ch = p.chamfer ?? 0.3, tol = p.surface_tol ?? 0.005, dev = p.mesh_dev ?? 0.01;
   const flankTol = dev * 0.25;
   const g = pm.derive(p);
   const prof = pm.buildProfiles(p, g);
+  // taper: one profile set per distinct shift offset dx(z) (mirror -> each one is used twice)
+  const tapered = pm.taperHalf(p, g.m) > 0;
+  const profCache = new Map([[0, prof]]);
+  const profsAtDx = (dx) => {
+    const key = Math.round(dx * 1e12) / 1e12;
+    let pr = profCache.get(key);
+    if (!pr) { pr = pm.buildProfiles(p, pm.derive(p, null, null, null, dx)); profCache.set(key, pr); }
+    return pr;
+  };
+  const profsAt = tapered ? (z) => profsAtDx(pm.taperDx(p, g.m, z)) : () => prof;
+  const half = pm.taperHalf(p, g.m);
+  const extremes = tapered ? [prof, profsAtDx(-half), profsAtDx(half)] : [prof];
+  const tz = taperSections(p, g.m, H);
   const T1 = performance.now();
   const d = g.d;
   const { f: twist, hs } = pm.helixTwist(g, p.beta, H, p.reversals);
@@ -304,38 +439,47 @@ export function buildBearing(p) {
   const holeClamp = (rh, c) => (c > 0 ? (r, dz) => (dz < c ? max(r, rh + c - dz) : r) : ident);
   const odClamp = (R, c) => (c > 0 ? (r, dz) => (dz < c ? min(r, R - c + dz) : r) : ident);
   const fixedZ = (c) => mergeZ([0, H], chamferSections(H, c));
-  // chamfer cone radius at distance dz from a face (null = no chamfer at this section)
-  const extRc = (ra, c) => (dz) => (c > 0 && dz < c ? ra - c + dz : null);
-  const intRc = (ri, c) => (dz) => (c > 0 && dz < c ? ri + c - dz : null);
+  // chamfer cone radius at distance dz from a face for this section's profile (null = none)
+  const extRc = (c) => (dz, pr) => (c > 0 && dz < c ? pr.ra - c + dz : null);
+  const intRc = (c) => (dz, pr) => (c > 0 && dz < c ? pr.ri + c - dz : null);
+  const minOver = (fn) => Math.min(...extremes.map(fn));
 
   // ---- sun
-  const sp = prof.sun;
-  const sch = ch > 0 ? min(ch, 0.5 * (sp.ra - sp.rf)) : 0;
+  const sch = ch > 0 ? minOver((e) => min(ch, 0.5 * (e.sun.ra - e.sun.rf))) : 0;
   const sunLoops = [{
-    loop: toothLoop(toothTemplate(sp, dev, flankTol, false), false, extRc(sp.ra, sch)), twist: (z) => twist(z)[0],
-    zs: mergeZ(helixSections(H, hs, leg(0), sp.ra, tol), chamferSections(H, sch)), hole: false,
+    loop: toothLoop(toothLayout(extremes.map((e) => e.sun), dev, flankTol, false), (z) => profsAt(z).sun, extRc(sch)),
+    twist: (z) => twist(z)[0], hole: false,
+    zs: mergeZ(helixSections(H, hs, leg(0), prof.sun.ra, tol), chamferSections(H, sch), tz),
   }];
   if (p.sun_bore_shape !== "None" && p.ID > 0) {
-    sunLoops.push({ loop: radialLoop(boreLoop(p.sun_bore_shape, p.ID, d, p.sun_bore_flat ?? 0.4, dev), holeClamp(p.ID / 2 + d, ch)),
+    const rb = p.ID / 2 + d;
+    const tex = textureLoop(p, "bore", rb, +1, H, ch, holeClamp(rb, ch));
+    sunLoops.push(tex ? { loop: tex.loop, zs: tex.zs, twist: zero, hole: true } : {
+      loop: radialLoop(boreLoop(p.sun_bore_shape, p.ID, d, p.sun_bore_flat ?? 0.4, dev), holeClamp(rb, ch)),
       twist: zero, zs: fixedZ(ch), hole: true });
   }
   const sun = buildBody(sunLoops, H);
 
   // ---- ring
-  const rp_ = prof.ring, R = p.OD / 2.0;
-  const c2 = ch > 0 ? min(ch, 0.45 * (R - rp_.ro)) : 0;
+  const R = p.OD / 2.0;
+  const roMax = Math.max(...extremes.map((e) => e.ring.ro));
+  const c2 = ch > 0 ? min(ch, 0.45 * (R - roMax - pm.texDepth(p, "od"))) : 0;
+  const odTex = textureLoop(p, "od", R, -1, H, c2, odClamp(R, c2));
   const ring = buildBody([
-    { loop: radialLoop(circleLoop(R, dev), odClamp(R, c2)), twist: zero, zs: fixedZ(c2), hole: false },
-    { loop: toothLoop(toothTemplate(rp_, dev, flankTol, true), true, intRc(rp_.ri, ch)), twist: (z) => twist(z)[2] + ph.ring_rot,
-      zs: mergeZ(helixSections(H, hs, leg(2), rp_.ro, tol), chamferSections(H, ch)), hole: true },
+    odTex ? { loop: odTex.loop, zs: odTex.zs, twist: zero, hole: false }
+      : { loop: radialLoop(circleLoop(R, dev), odClamp(R, c2)), twist: zero, zs: fixedZ(c2), hole: false },
+    { loop: toothLoop(toothLayout(extremes.map((e) => e.ring), dev, flankTol, true), (z) => profsAt(z).ring, intRc(ch)),
+      twist: (z) => twist(z)[2] + ph.ring_rot, hole: true,
+      zs: mergeZ(helixSections(H, hs, leg(2), roMax, tol), chamferSections(H, ch), tz) },
   ], H);
 
   // ---- planet (one body, N placements)
-  const pp = prof.planet;
-  const pch = ch > 0 ? min(ch, 0.5 * (pp.ra - pp.rf)) : 0;
+  const pch = ch > 0 ? minOver((e) => min(ch, 0.5 * (e.planet.ra - e.planet.rf))) : 0;
+  const raMax = Math.max(...extremes.map((e) => e.planet.ra));
   const plLoops = [{
-    loop: toothLoop(toothTemplate(pp, dev, flankTol, false), false, extRc(pp.ra, pch)), twist: (z) => twist(z)[1],
-    zs: mergeZ(helixSections(H, hs, leg(1), pp.ra, tol), chamferSections(H, pch)), hole: false,
+    loop: toothLoop(toothLayout(extremes.map((e) => e.planet), dev, flankTol, false), (z) => profsAt(z).planet, extRc(pch)),
+    twist: (z) => twist(z)[1], hole: false,
+    zs: mergeZ(helixSections(H, hs, leg(1), raMax, tol), chamferSections(H, pch), tz),
   }];
   if (p.planet_bore_d > 0) {
     const bch = min(ch, 0.2);
@@ -345,7 +489,8 @@ export function buildBearing(p) {
   const planet = buildBody(plLoops, H);
   const placements = ph.orbit.map((th, i) => ({ x: g.a * cos(th), y: g.a * sin(th), rot: ph.spins[i], orbit: th }));
   const T2 = performance.now();
-  return { g, prof, phasing: ph, ring, sun, planet, placements, ms: { profiles: T1 - T0, mesh: T2 - T1 } };
+  return { g, prof, phasing: ph, ring, sun, planet, placements, ringRoMax: roMax, profileSets: profCache.size,
+    ms: { profiles: T1 - T0, mesh: T2 - T1 } };
 }
 
 // ---------------------------------------------------------------- checks

@@ -19,8 +19,11 @@ from shapely.ops import unary_union
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FILES = [os.environ["PB_STL"]] if os.environ.get("PB_STL") else sorted(glob.glob(os.path.join(ROOT, "build", "PlanetaryBearing_*.stl")))
-# FreeCAD B-rep export of the defaults (Documents\PlanetaryBearing\..._e0.15.stl), measured with trimesh
-FREECAD_DEFAULT = dict(tag="OD31.7_ID22_H5_S56P4x24R64_b30_e0.15", ring=532.31, sun=354.07, planet=12.742)
+# FreeCAD B-rep exports of the V1 and V2 defaults, measured with trimesh
+FREECAD_REF = {
+    "OD31.7_ID22_H5_S56P4x24R64_b30_e0.15": dict(ring=532.31, sun=354.07, planet=12.742),   # V1
+    "OD31.7_ID18_H5_S31P4x14R39_b30_e0.1": dict(ring=713.95, sun=419.27, planet=40.597),     # V2
+}
 
 if not FILES:
     pytest.skip("no exported STL (set PB_STL or upload to build/)", allow_module_level=True)
@@ -45,11 +48,15 @@ def bodies(path):
 def stl(request):
     info = parse(request.param)
     mesh, parts = bodies(request.param)
-    return info, mesh, parts
+    return info, mesh, parts, request.param
+
+
+def stl_path(stl):
+    return stl[3]
 
 
 def test_bodies_and_watertight(stl):
-    info, mesh, parts = stl
+    info, mesh, parts, _ = stl
     assert len(parts) == 2 + info["N"]
     for q in parts:
         assert q.is_watertight and q.is_winding_consistent and q.volume > 0
@@ -58,14 +65,14 @@ def test_bodies_and_watertight(stl):
 
 
 def test_volumes_match_freecad(stl):
-    info, mesh, parts = stl
-    if info["tag"] != FREECAD_DEFAULT["tag"]:
+    info, mesh, parts, _ = stl
+    ref = FREECAD_REF.get(info["tag"]) if os.path.basename(os.path.dirname(stl_path(stl))) != "freecad" else None
+    if ref is None or not os.path.basename(stl_path(stl)).endswith(info["tag"] + ".stl"):
         pytest.skip("no FreeCAD reference for this layout")
     # identify by bounding radius: ring is outermost; sun centred
     ring, sun = parts[0], parts[1]
-    for got, ref in ((ring.volume, FREECAD_DEFAULT["ring"]), (sun.volume, FREECAD_DEFAULT["sun"]),
-                     (parts[2].volume, FREECAD_DEFAULT["planet"])):
-        assert abs(got / ref - 1) < 0.01, (got, ref)
+    for got, want in ((ring.volume, ref["ring"]), (sun.volume, ref["sun"]), (parts[2].volume, ref["planet"])):
+        assert abs(got / want - 1) < 0.01, (got, want)
 
 
 def _section(body, z):
@@ -77,7 +84,7 @@ def _section(body, z):
 
 
 def test_no_interference_on_slices(stl):
-    info, mesh, parts = stl
+    info, mesh, parts, _ = stl
     H, e = info["H"], info["e"]
     ring, sun, planets = parts[0], parts[1], parts[2:]
     # mid-legs and the reversal plane, away from the chamfers

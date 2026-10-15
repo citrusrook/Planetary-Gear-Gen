@@ -56,6 +56,17 @@ async function fixture(name) {
   const diff = rep.map((l, i) => [l, fx.report[i]]).filter(([a, b]) => a !== b);
   check(`${name}: report (${fx.report.length} lines)`, rep.length === fx.report.length && diff.length === 0,
     diff.map(([a, b]) => `\n   js: ${a}\n   py: ${b}`).join(""));
+  if (fx.taper_sections) {
+    let ex = 0, ep = 0;
+    for (const sec of fx.taper_sections) {
+      const dx = pm.taperDx(p, g.m, sec.z);
+      const gz = pm.derive(p, null, null, null, dx);
+      ex = Math.max(ex, Math.abs(dx - sec.dx), Math.abs(gz.x - sec.x));
+      const pz = pm.buildProfiles(p, gz);
+      for (const k of ["planet", "sun", "ring"]) ep = Math.max(ep, maxAbs(pz[k].r, sec.profiles[k].r), maxAbs(pz[k].t, sec.profiles[k].t));
+    }
+    check(`${name}: taper sections (${fx.taper_sections.length} heights)`, ex < 1e-12 && ep < 1e-6, `dx/x err ${ex.toExponential(2)}, profile err ${ep.toExponential(2)}`);
+  }
   for (const sc of fx.solver) {
     const q = { ...p, ...sc.input };
     const t0 = performance.now();
@@ -89,13 +100,26 @@ function meshChecks(name, p, expect) {
 
 try {
   const p1 = await fixture("default_profiles.json");
+  const pv1 = await fixture("v1_default_profiles.json");
   const p2 = await fixture("large_hex_profiles.json");
-  // volumes of the FreeCAD export (DocumentsPlanetaryBearingPlanetaryBearing_OD31.7_..._e0.15.stl, measured with trimesh)
-  meshChecks("default", p1, { ring: 532.31, sun: 354.07, planet: 12.742 });
+  const p3 = await fixture("taper_susan_profiles.json");
+  // V1 defaults vs the FreeCAD export (Documents/PlanetaryBearing/PlanetaryBearing_OD31.7_ID22_..._e0.15.stl, trimesh)
+  meshChecks("V1 default", pv1, { ring: 532.31, sun: 354.07, planet: 12.742 });
+  // V2 defaults vs the FreeCAD export of the same (build/freecad/..._S31P4x14R39_b30_e0.1.stl, trimesh)
+  meshChecks("V2 default", p1, { ring: 713.95, sun: 419.27, planet: 40.597 });
   meshChecks("large_hex", p2, null);
-  for (const shape of ["Square", "D-Flat", "None"]) meshChecks(`default sun bore ${shape}`, { ...p1, sun_bore_shape: shape, ID: shape === "None" ? 22 : 8 }, null);
+  for (const shape of ["Square", "D-Flat", "None"]) meshChecks(`default sun bore ${shape}`, { ...p1, sun_bore_shape: shape, ID: shape === "None" ? 18 : 8 }, null);
   meshChecks("no chamfer", { ...p1, chamfer: 0 }, null);
   meshChecks("spur, hex planet bores", { ...p2, beta: 0, planet_bore_shape: "Hex" }, null);
+  // V2 textures (each type on the OD and in the bore) and tapers
+  for (const t of pm.TEX_TYPES.slice(1)) meshChecks(`OD ${t}`, { ...p1, od_tex: t, od_tex_depth: 0.15 }, null);
+  for (const t of pm.TEX_TYPES.slice(1)) meshChecks(`bore ${t}`, { ...p1, bore_tex: t }, null);
+  meshChecks("hex bore + texture (ignored)", { ...p1, ID: 8, sun_bore_shape: "Hex", bore_tex: "Dimples" }, null);
+  const tp = { ...p1, OD: 60, ID: 30, H: 8, Zp: 10, Zs: 60, Zr: 80, N: 14, taper: 4 };
+  for (const [nm, o] of [["single", {}], ["single flip", { taper_flip: true }], ["mirror", { taper_mirror: true }], ["mirror flip", { taper_mirror: true, taper_flip: true }]])
+    meshChecks(`taper 4° ${nm}`, { ...tp, ...o }, null);
+  meshChecks("lazy susan (taper + knurl + ovals)", p3, null);
+  meshChecks("taper + diamond OD + planet bores", { ...tp, taper_mirror: true, od_tex: "Diamond knurl", planet_bore_d: 2 }, null);
 } catch (e) {
   check("exception", false, String(e.stack || e));
 }

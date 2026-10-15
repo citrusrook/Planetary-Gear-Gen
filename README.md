@@ -17,6 +17,12 @@ python3 tools/serve_web.py            # then open http://localhost:8765/web/
 python3 tools/serve_web.py --host 0.0.0.0   # reachable from other machines on a trusted LAN
 ```
 
+V2 adds:
+- a **taper** for lazy-susan / thrust bearings: the planets become cones like tapered rollers. **Mirror** makes a double taper; **Flip** reverses its direction.
+- **surface textures** on the ring OD and the sun bore: straight, diagonal or diamond knurl, dimples or oval reliefs.
+
+Both are under "3 Herringbone & taper" and "6 Surface texture". The report explains the limits; larger planets (8+ teeth) handle bigger taper angles.
+
 Only the Python standard library is needed to serve it. It runs in any current browser (Firefox ESR, Chromium, Chrome, Edge) and loads three.js and earcut from jsdelivr, so it needs internet. Edit the parameters on the left; tooth counts are auto-corrected the same way as in FreeCAD. Use **Download STL** for one print-in-place file, or Ring / Sun / Planets for separate files. `http://localhost:8765/web/tests.html` checks the JS port against `fixtures/`.
 
 ## FreeCAD

@@ -47,6 +47,36 @@ def test_zero_clearance_is_conjugate(over):
     assert worst < 2e-3 * g["m"] ** 2          # numerical noise only
 
 
+TAPER_CASES = [dict(), dict(Zp=7, Zs=23, N=5, OD=40, ID=8), dict(Zp=12, Zs=18, N=4, OD=60, ID=10, alpha=20)]
+
+
+@pytest.mark.parametrize("over", TAPER_CASES)
+@pytest.mark.parametrize("dx", [0.0, 0.2, 0.45])
+def test_taper_slices_stay_conjugate(over, dx):
+    """A tapered bearing is a stack of S0 slices with shift x_auto+dx (auto mode keeps dx >= 0 at the
+    thin end): each slice must mesh exactly at zero clearance and keep the flank gap = expansion."""
+    p = dict(DEFAULTS, expansion=0.0, root_clear=0.0, **over); p["Zr"] = p["Zs"] + 2 * p["Zp"]
+    x = pm.derive(p, dx=dx)["x"]
+    q = dict(p, shift_auto=False, shift=x)
+    worst, mind, g = simulate(q)
+    assert worst < 2e-3 * g["m"] ** 2
+    e = 0.1
+    q = dict(q, expansion=e, root_clear=0.1)
+    worst, mind, g = simulate(q)
+    assert worst == 0.0 and abs(mind - e) < 0.01 * max(1, g["m"])
+
+
+@pytest.mark.parametrize("over", TAPER_CASES)
+def test_manual_shift_below_undercut_limit_still_clears(over):
+    """Below the practical undercut limit (manual shift only) the ring tip reaches the planet's
+    trochoidal root at zero clearance; the normal clearances still leave no overlap, though the
+    gap shrinks (e.g. 0.100 -> 0.078 mm for 12T planets at 20 deg, x 0.3 below the limit)."""
+    p = dict(DEFAULTS, expansion=0.1, root_clear=0.1, **over); p["Zr"] = p["Zs"] + 2 * p["Zp"]
+    x = pm.derive(p, dx=-0.3)["x"]
+    worst, mind, g = simulate(dict(p, shift_auto=False, shift=x))
+    assert worst == 0.0 and mind > 0.05
+
+
 @pytest.mark.parametrize("over", CASES)
 def test_gap_equals_expansion(over):
     e = 0.1

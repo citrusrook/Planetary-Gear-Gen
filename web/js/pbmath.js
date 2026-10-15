@@ -8,18 +8,22 @@ export const lcm = (a, b) => (a * b) / gcd(a, b);
 const radians = (d) => d * (PI / 180);
 
 export const DEFAULTS = {
-  OD: 31.7, ID: 22.0, H: 5.0,
-  N: 24, Zp: 4, Zs: 56, Zr: 64,
+  OD: 31.7, ID: 18.0, H: 5.0,
+  N: 14, Zp: 4, Zs: 31, Zr: 39,            // module 0.71, hunting tooth
   alpha: 22.0, beta: 30.0, reversals: 1,
-  expansion: 0.15, root_clear: 0.15, tip_land: 0.1,
+  expansion: 0.1, root_clear: 0.1, tip_land: 0.025,
   hunting: false,
-  min_planet_gap: 0.3, min_wall: 0.5, min_module: 0.4,
+  min_planet_gap: 0.3, min_wall: 0.5, min_module: 0.5,
   module_auto: true, module: 0.5,
   shift_auto: true, shift: 0.0,
   sun_bore_shape: "Round", planet_bore_d: 0.0, planet_bore_shape: "Round",
+  taper: 0.0, taper_mirror: false, taper_flip: false,
+  od_tex: "None", od_tex_depth: 0.2, od_tex_pitch: 1.5, od_tex_angle: 30.0, od_tex_size: 1.2, od_tex_aspect: 2.5,
+  bore_tex: "None", bore_tex_depth: 0.2, bore_tex_pitch: 1.2, bore_tex_angle: 30.0, bore_tex_size: 1.0, bore_tex_aspect: 2.5,
   // FreeCAD-object extras (geometry only, not used by the solver)
   chamfer: 0.3, sun_bore_flat: 0.4, surface_tol: 0.005, mesh_dev: 0.01,
 };
+export const DEFAULTS_V1 = { ...DEFAULTS, ID: 22.0, N: 24, Zs: 56, Zr: 64, expansion: 0.15, root_clear: 0.15, tip_land: 0.1, min_module: 0.4 };
 
 // numpy.linspace, same arithmetic (y = i*step + start, last = stop)
 export function linspace(a, b, n) {
@@ -49,7 +53,8 @@ export function interp(x, xp, fp) {
 // --------------------------------------------------------------------------
 //  Basic geometry derived from the parameters
 // --------------------------------------------------------------------------
-export function derive(p, Zs = null, Zp = null, N = null) {
+/** dx: extra profile shift for one height of a tapered bearing (see taperDx); x = x0 + dx */
+export function derive(p, Zs = null, Zp = null, N = null, dx = 0.0) {
   Zs = Zs ?? p.Zs; Zp = Zp ?? p.Zp; N = N ?? p.N;
   const Zr = Zs + 2 * Zp;
   const al = radians(p.alpha);
@@ -60,7 +65,9 @@ export function derive(p, Zs = null, Zp = null, N = null) {
   if (p.shift_auto ?? true) {
     const z_th = 2.0 / sin(al) ** 2;
     x = max(0.0, (5.0 / 6.0 * z_th - Zp) / z_th);
+    x += taperHalf(p, m);          // taper: thin end of the planet sits at the practical undercut limit
   } else x = p.shift;
+  x += dx;
   const rs = m * Zs / 2, rp = m * Zp / 2, rr = m * Zr / 2;
   const a = rs + rp;
   const g = { Zs, Zp, Zr, N, m, x, alpha: al, c, d, rs, rp, rr, a,
@@ -100,6 +107,61 @@ export function boreOuterRadius(shape, dia, comp) {
   return r;
 }
 
+// Python round() (ties to even) for parity
+const pyRound = (v) => { const f = Math.floor(v), r = v - f; return r > 0.5 ? f + 1 : r < 0.5 ? f : (f % 2 === 0 ? f : f + 1); };
+
+export const TEX_TYPES = ["None", "Straight knurl", "Diagonal knurl", "Diamond knurl", "Dimples", "Ovals"];
+
+/** Half of the profile-shift range caused by the taper: dx(z) spans [-half, +half]. */
+export function taperHalf(p, m) {
+  const t = p.taper ?? 0.0;
+  if (!t) return 0.0;
+  return tan(radians(t)) / m * p.H * (p.taper_mirror ? 0.25 : 0.5);
+}
+
+/** Profile-shift offset at height z. single: planet wide at the bottom (flip: top);
+ *  mirrored: planet fattest at mid-height (flip: thinnest). */
+export function taperDx(p, m, z) {
+  const t = p.taper ?? 0.0;
+  if (!t) return 0.0;
+  const H = p.H;
+  let s = p.taper_mirror ? (H / 4 - abs(z - H / 2)) : (H / 2 - z);
+  if (p.taper_flip) s = -s;
+  return tan(radians(t)) / m * s;
+}
+
+export function taperMode(p) {
+  if (p.taper_mirror) return p.taper_flip ? "mirrored, planets thinnest at mid-height" : "mirrored, planets fattest at mid-height";
+  return p.taper_flip ? "single, planets wide at the top" : "single, planets wide at the bottom";
+}
+
+/** Radial depth a surface texture cuts in ('od' = ring OD, 'bore' = sun bore; Round bores only). */
+export function texDepth(p, which) {
+  if ((p[which + "_tex"] ?? "None") === "None") return 0.0;
+  if (which === "bore" && (p.sun_bore_shape !== "Round" || !(p.ID > 0))) return 0.0;
+  return max(0.0, p[which + "_tex_depth"] ?? 0.0);
+}
+
+/** Feature count around and rows over the height for a texture on a cylinder of radius R. */
+export function texLayout(p, which, R, chamfer = 0.3) {
+  const kind = p[which + "_tex"] ?? "None";
+  const pitch = max(0.05, p[which + "_tex_pitch"] ?? 1.0);
+  const n = max(3, pyRound(2 * PI * R / pitch));
+  const out = { n, rows: 0, pz: 0.0, ext_z: 0.0, w: 0.0, L: 0.0 };
+  if (kind === "Dimples" || kind === "Ovals") {
+    const w = max(0.05, p[which + "_tex_size"] ?? 1.0);
+    const L = kind === "Ovals" ? w * max(1.0, p[which + "_tex_aspect"] ?? 1.0) : w;
+    const psi = kind === "Ovals" ? radians(p[which + "_tex_angle"] ?? 0.0) : 0.0;
+    const ext_z = L * abs(cos(psi)) + w * abs(sin(psi));
+    const pz = 0.5 * sqrt(3.0) * pitch * ext_z / w;
+    const H = p.H;
+    const span = H - 2 * (chamfer + ext_z / 2);
+    const rows = span >= 0 ? Math.floor(span / pz) + 1 : (H > ext_z ? 1 : 0);
+    Object.assign(out, { rows, pz, ext_z, w, L });
+  }
+  return out;
+}
+
 // --------------------------------------------------------------------------
 //  Tooth-count solver
 // --------------------------------------------------------------------------
@@ -119,29 +181,32 @@ export function feasible(p, Zs, Zp, N, why = false) {
     if (!why) return [false, reasons];
   }
   const g = derive(p, Zs, Zp, N);
+  const half = taperHalf(p, g.m);
+  const g_hi = half ? derive(p, Zs, Zp, N, half) : g;      // widest planet / deepest ring root
+  const g_lo = half ? derive(p, Zs, Zp, N, -half) : g;     // thinnest planet
   const minMod = p.min_module ?? 0.0;
   if (g.m < minMod - 1e-12) {
     reasons.push(`module ${f3(g.m)} < min printable module ${f3(minMod)}`);
     if (!why) return [false, reasons];
   }
   if (N >= 2) {
-    const gap = 2 * g.a * sin(PI / N) - 2 * g.ra_p;
+    const gap = 2 * g.a * sin(PI / N) - 2 * g_hi.ra_p;
     if (gap < p.min_planet_gap - 1e-9) {
       reasons.push(`adjacent planet tips gap ${f3(gap)} < ${f3(p.min_planet_gap)} mm`);
       if (!why) return [false, reasons];
     }
   }
-  const wall = p.OD / 2 - g.ro_r;
+  const wall = p.OD / 2 - g_hi.ro_r - texDepth(p, "od");
   if (wall < p.min_wall - 1e-9) {
     reasons.push(`ring wall ${f3(wall)} < ${f3(p.min_wall)} mm`);
     if (!why) return [false, reasons];
   }
-  const rim = g.rf_s - boreOuterRadius(p.sun_bore_shape, p.ID, g.d);
+  const rim = g_hi.rf_s - boreOuterRadius(p.sun_bore_shape, p.ID, g.d) - texDepth(p, "bore");
   if (rim < p.min_wall - 1e-9) {
     reasons.push(`sun rim ${f3(rim)} < ${f3(p.min_wall)} mm`);
     if (!why) return [false, reasons];
   }
-  if (g.rf_s <= 0 || g.rf_p <= 0) reasons.push("negative root radius");
+  if (g_hi.rf_s <= 0 || g_lo.rf_p <= 0) reasons.push("negative root radius");
   return [reasons.length === 0, reasons];
 }
 
@@ -300,6 +365,14 @@ export function buildProfiles(p, g) {
   };
 }
 
+/** Profiles at the taper extremes: {g_lo, plo, g_hi, phi}, or null without taper. */
+export function taperProfiles(p, g) {
+  const half = taperHalf(p, g.m);
+  if (!half) return null;
+  const g_lo = derive(p, g.Zs, g.Zp, g.N, -half), g_hi = derive(p, g.Zs, g.Zp, g.N, half);
+  return { g_lo, plo: buildProfiles(p, g_lo), g_hi, phi: buildProfiles(p, g_hi) };
+}
+
 // --------------------------------------------------------------------------
 //  Assembly phasing, twist, kinematics
 // --------------------------------------------------------------------------
@@ -391,19 +464,64 @@ export function report(p, g, prof, notes = []) {
   L.push(`Planet tip ${fx(pl.ra, 4)}${pl.ra < g.ra_p - 1e-6 ? " (truncated, pointed)" : ""} root ${fx(pl.rf, 4)} | ` +
     `Sun tip ${fx(su.ra, 4)}${su.ra < g.ra_s - 1e-6 ? " (truncated, pointed)" : ""} root ${fx(su.rf, 4)} | ` +
     `Ring tip ${fx(ri.ri, 4)} root ${fx(ri.ro, 4)}`);
-  const wall = p.OD / 2 - ri.ro;
-  const rim = su.rf - boreOuterRadius(p.sun_bore_shape, p.ID, g.d);
+  const tp = taperProfiles(p, g);
+  const hi = tp ? tp.phi : prof, lo = tp ? tp.plo : prof;
+  const wall = p.OD / 2 - hi.ring.ro - texDepth(p, "od");
+  const rim = hi.sun.rf - boreOuterRadius(p.sun_bore_shape, p.ID, g.d) - texDepth(p, "bore");
   L.push(`Ring wall ${fx(wall, 3)} mm, sun rim ${fx(rim, 3)} mm (min ${fx(p.min_wall, 2)})`);
   if (p.planet_bore_d > 0) {
-    const prim = pl.rf - boreOuterRadius(p.planet_bore_shape, p.planet_bore_d, g.d);
+    const prim = lo.planet.rf - boreOuterRadius(p.planet_bore_shape, p.planet_bore_d, g.d);
     L.push(`Planet rim around bore ${fx(prim, 3)} mm${prim < 0.4 ? "  (WARNING thin)" : ""}`);
   }
   if (N >= 2) {
-    const gap = 2 * g.a * sin(PI / N) - 2 * pl.ra;
+    const gap = 2 * g.a * sin(PI / N) - 2 * hi.planet.ra;
     L.push(`Planet-to-planet tip gap ${fx(gap, 3)} mm (min ${fx(p.min_planet_gap, 2)})`);
   }
   L.push(`Clearances: flank gap per contact ${fx(p.expansion, 3)} mm (${fx(g.d, 3)} per part), tip-root ${fx(g.c, 3)} + ${fx(p.expansion, 3)} mm`);
+  if (tp) L.push(...reportTaper(p, g, tp));
+  L.push(...reportTexture(p, g));
   const [, why] = feasible(p, Zs, Zp, N, true);
   for (const w of why) L.push("WARNING: " + w);
+  return L;
+}
+
+function reportTaper(p, g, { g_lo, plo, g_hi, phi }) {
+  const L = ["=== Taper ==="];
+  L.push(`Taper ${fx(p.taper, 1)} deg (${taperMode(p)}): planet profile shift x ${fs(g_lo.x, 3)} .. ${fs(g_hi.x, 3)}, mid-height ${fs(g.x, 3)}`);
+  L.push(`Planet tip ${fx(plo.planet.ra, 4)} .. ${fx(phi.planet.ra, 4)} root ${fx(plo.planet.rf, 4)} .. ${fx(phi.planet.rf, 4)} | ` +
+    `Sun tip ${fx(phi.sun.ra, 4)} .. ${fx(plo.sun.ra, 4)} root ${fx(phi.sun.rf, 4)} .. ${fx(plo.sun.rf, 4)} | ` +
+    `Ring tip ${fx(plo.ring.ri, 4)} .. ${fx(phi.ring.ri, 4)} root ${fx(plo.ring.ro, 4)} .. ${fx(phi.ring.ro, 4)}`);
+  const [a_lo, b_lo] = contactRatios(g_lo, plo), [a_hi, b_hi] = contactRatios(g_hi, phi);
+  L.push(`Transverse contact ratio thin end / wide end: sun-planet ${fx(a_lo, 3)} / ${fx(a_hi, 3)}, ring-planet ${fx(b_lo, 3)} / ${fx(b_hi, 3)}` +
+    (min(a_lo, a_hi, b_lo, b_hi) < 1.0 ? "  (WARNING <1.0)" : ""));
+  const z_th = 2.0 / sin(g.alpha) ** 2;
+  const lim_p = (5.0 / 6.0 * z_th - g.Zp) / z_th, lim_s = (5.0 / 6.0 * z_th - g.Zs) / z_th;
+  if (g_lo.x < lim_p - 1e-9)
+    L.push(`WARNING: planet undercut at the thin end (x ${fs(g_lo.x, 3)} < practical limit ${fs(lim_p, 3)}): weaker tooth roots`);
+  if (-g_hi.x < lim_s - 1e-9)
+    L.push(`WARNING: sun undercut where the planets are widest (sun x ${fs(-g_hi.x, 3)} < practical limit ${fs(lim_s, 3)})`);
+  if (phi.planet.ra < g_hi.rp + g_hi.m * (1 + g_hi.x) - g_hi.d - 1e-6)
+    L.push("Planet tips are truncated (pointed) at the wide end - normal for a strong taper");
+  return L;
+}
+
+function reportTexture(p, g) {
+  const L = [];
+  for (const [which, label, R] of [["od", "Outer (ring OD)", p.OD / 2], ["bore", "Inner (sun bore)", p.ID / 2 + g.d]]) {
+    const kind = p[which + "_tex"] ?? "None";
+    if (kind === "None") continue;
+    if (!L.length) L.push("=== Surface texture ===");
+    if (texDepth(p, which) === 0.0) { L.push(`${label}: ${kind} ignored - needs a Round sun bore`); continue; }
+    const lay = texLayout(p, which, R, p.chamfer ?? 0.3);
+    const d = p[which + "_tex_depth"];
+    if (kind.endsWith("knurl")) {
+      const ang = kind === "Straight knurl" ? "" : `, helix ${fx(p[which + "_tex_angle"], 1)} deg`;
+      L.push(`${label}: ${kind}, depth ${fx(d, 3)} mm, pitch ${fx(p[which + "_tex_pitch"], 2)} mm -> ${lay.n} around${ang}`);
+    } else {
+      const size = kind === "Dimples" ? `${fx(lay.w, 2)} mm` : `${fx(lay.w, 2)} x ${fx(lay.L, 2)} mm, tilt ${fx(p[which + "_tex_angle"], 1)} deg`;
+      L.push(`${label}: ${kind} ${size}, depth ${fx(d, 3)} mm, pitch ${fx(p[which + "_tex_pitch"], 2)} mm -> ${lay.n} around x ${lay.rows} row(s)`);
+      if (lay.rows === 0) L.push(`WARNING: ${kind.toLowerCase()} are taller than the height between the chamfers - none placed`);
+    }
+  }
   return L;
 }

@@ -10,13 +10,18 @@ export function resolve(p, lock) {
  *  The solver's limits (MinWall etc.) are softer; these are the hard physical ones. */
 export function geometryErrors(p) {
   const g = pm.derive(p), E = [];
-  if (g.rf_s <= 0 || g.rf_p <= 0) E.push("negative root radius (module too small for the clearances)");
-  if (p.OD / 2 - g.ro_r <= 0.05) E.push("ring tooth roots break through the OD");
+  const half = pm.taperHalf(p, g.m);
+  const hi = half ? pm.derive(p, null, null, null, half) : g;     // widest planet / deepest roots
+  const lo = half ? pm.derive(p, null, null, null, -half) : g;    // thinnest planet
+  const odT = pm.texDepth(p, "od"), boreT = pm.texDepth(p, "bore");
+  if (hi.rf_s <= 0 || lo.rf_p <= 0) E.push("negative root radius (module too small for the clearances" + (half ? " or taper too strong)" : ")"));
+  if (p.OD / 2 - hi.ro_r - odT <= 0.05) E.push(odT ? "OD texture cuts through to the ring tooth roots" : "ring tooth roots break through the OD");
   if (p.sun_bore_shape !== "None" && p.ID > 0 &&
-      g.rf_s - pm.boreOuterRadius(p.sun_bore_shape, p.ID, g.d) <= 0.05) E.push("sun bore cuts through the sun teeth");
-  if (p.planet_bore_d > 0 && g.rf_p - pm.boreOuterRadius(p.planet_bore_shape, p.planet_bore_d, g.d) <= 0.05)
+      hi.rf_s - pm.boreOuterRadius(p.sun_bore_shape, p.ID, g.d) - boreT <= 0.05)
+    E.push(boreT ? "bore texture cuts through to the sun tooth roots" : "sun bore cuts through the sun teeth");
+  if (p.planet_bore_d > 0 && lo.rf_p - pm.boreOuterRadius(p.planet_bore_shape, p.planet_bore_d, g.d) <= 0.05)
     E.push("planet bore cuts through the planet teeth");
-  if (g.N >= 2 && 2 * g.a * Math.sin(Math.PI / g.N) - 2 * g.ra_p <= 0) E.push("neighbouring planets overlap");
+  if (g.N >= 2 && 2 * g.a * Math.sin(Math.PI / g.N) - 2 * hi.ra_p <= 0) E.push("neighbouring planets overlap");
   return E;
 }
 
@@ -40,7 +45,7 @@ export function build(p, notes = []) {
   }
   return {
     p, report: rep, checks, ms: B.ms,
-    g: B.g, placements: B.placements, ringRot: B.phasing.ring_rot, ringRo: B.prof.ring.ro,
+    g: B.g, placements: B.placements, ringRot: B.phasing.ring_rot, ringRo: B.ringRoMax, profileSets: B.profileSets,
     ring: B.ring, sun: B.sun, planet: B.planet,
   };
 }

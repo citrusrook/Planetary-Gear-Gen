@@ -36,6 +36,7 @@ Extra parameters added during the build: `tip_land` (pointed tips are truncated 
 - **Installed on Isaac's PC:** `%APPDATA%\FreeCAD\v1-1\Mod\PlanetaryBearing\` (FreeCAD 1.1.4, Windows, Python 3.11 with numpy and shapely), plus the macro in `%APPDATA%\FreeCAD\v1-1\Macro\`.
 - **Saved outputs on Isaac's PC:** `Documents\PlanetaryBearing\PlanetaryBearing.FCStd` and `PlanetaryBearing_OD31.7_ID22_H5_S56P4x24R64_b30_e0.15.stl`. That STL is 388k facets, watertight, with 26 bodies.
 - **Done, verified (2026-10-08): Step 2, the web app** in `web/`. See §7 for how it is built and verified.
+- **Done, verified (2026-10-15): V2**: new defaults, tapered/lazy-susan bearings with mirror, and OD/bore textures. See §7.3.
 
 ## 3. Repo layout
 
@@ -196,6 +197,31 @@ Plain ES modules, no build step (Node isn't installed on Isaac's PC). three.js 0
 - Scripts have `#!/usr/bin/env python3` shebangs and executable bits. `tools/setup_venv.sh` creates `.venv`, because Debian blocks system-wide pip (PEP 668).
 - `tools/serve_web.py --host 0.0.0.0` serves to other machines.
 - `tests/test_portability.py` simulates Linux (apt, 1.1, upgraded, XDG_DATA_HOME, Flatpak, Snap), Windows and macOS home folders, and checks Python 3.11 syntax. These were not run on a real Debian machine yet: this PC has no WSL or Docker.
+
+### 7.3 V2 (2026-10-15): new defaults, taper, textures
+
+Isaac printed several V1 STLs: some worked, some didn't. V2 changes:
+
+- **Defaults:** min module 0.5, root clearance 0.1, flank gap 0.1, edge chamfer 0.3, tip land 0.025. A module of 0.68+ cannot fit OD 31.7 / ID 22 (the annulus is 4.85 mm; it needs about 6.1 mm), so the default bore is now **ID 18**: sun 31 / 14 planets × 4T / ring 39, module 0.71, hunting tooth. V1 is kept as `DEFAULTS_V1` and in `fixtures/v1_default_profiles.json`.
+- **Taper (lazy-susan bearing), "beveloid" design:** the profile shift varies with height, `x(z) = x0 + dx(z)`, with axes kept vertical. Every transverse slice is still a standard S0 set (same base circles and centre distance), so the mesh is exact at every height. Planets become cones and the sun/ring teeth taper to match.
+  - `taper_dx()`: single taper puts the planets' wide end at the bottom (Flip puts it at the top). Mirror is a double taper that is fattest at mid-height (Flip makes it thinnest there). `taper_half()` is the ± range.
+  - **Auto shift** centres the range so the thin end sits at the practical undercut limit (`x0 = x_auto + half`).
+  - The solver and report check the wide end (ring wall, sun rim, planet gap) and the thin end (planet root). The report has a `=== Taper ===` section with the x range, radii and end contact ratios, plus undercut and pointed-tip notes.
+  - The tilted-axis bevel alternative was rejected. It only allows discrete angles, cos τ = (Zr−Zs)/(2Zp), and can't be mirrored.
+  - **Limits:** 4-tooth planets go pointed fast, so a 4° taper drops the wide-end contact ratio to about 0.65. Lazy-susan sizes with 8–12-tooth planets take 4–6° with ε > 1.
+  - Below the undercut limit (manual shift only), the ring tip reaches the planet's trochoidal root. With the normal clearances there is no overlap, but the gap shrinks (`tests/test_mesh_sim.py`).
+- **Textures** on the ring OD (`od_*`) and the sun bore (`bore_*`, Round bores only): straight, diagonal or diamond knurl, dimples, or ovals, set by depth, pitch, angle, width and oval aspect.
+  - The depth counts against the ring wall / sun rim in `feasible()`. `tex_layout()` gives the count around and the rows; it's shared by the report and the mesh.
+- **Web mesh** (`meshgen.js`):
+  - Tapered tooth loops get a profile per z-section on a fixed vertex layout (`toothLayout`), stepped every 0.08 in x. The measured interpolation error is ≤ 0.006 mm.
+  - Textured loops have r(θ, z). The knurl grid is aligned so crests and grooves sit on vertices; dimples and ovals are spherical-cap pockets in staggered rows that stay clear of the chamfers.
+  - `geometryErrors()` covers the taper extremes and texture depth.
+- **FreeCAD:** gets the new defaults only. Taper and texture stay web-only (as Isaac chose); pb_math treats them as off when the keys are missing.
+- **Verified:**
+  - `web/tests.html`: 199 checks, including taper-section fixtures at 7e-15, every texture type, and every taper mode.
+  - Python: 76 tests.
+  - V2 default web mesh against FreeCAD's B-rep of the same layout: −0.42 / +0.30 / −0.04 % (`build/freecad/`, built with `freecadcmd`).
+  - Browser STL exports of the defaults, textures, single/mirror/flip tapers and a 120 mm lazy susan: watertight, zero overlap on slices, gap 0.097–0.099 at e = 0.1.
 
 ## 8. Open ideas / not done
 

@@ -1,5 +1,5 @@
 // UI: parameter panels (same groups/names as the FreeCAD object), solver locks, report, preview, export.
-import { DEFAULTS } from "./pbmath.js";
+import { DEFAULTS, TEX_TYPES } from "./pbmath.js";
 import { writeSTL } from "./stl.js";
 
 // [key in p, FreeCAD property name, label, kind, {min,max,step} | options, doc]
@@ -16,15 +16,18 @@ const GROUPS = [
     ["Zr", "RingTeeth", "Ring teeth", "int", { min: 14, max: 460, step: 1 }, "Ring (internal) tooth count = Sun + 2*Planet"],
     ["alpha", "PressureAngle", "Pressure angle °", "num", { min: 10, max: 35, step: 0.5 }, "Pressure angle (deg)"],
   ]],
-  ["3 Herringbone", [
+  ["3 Herringbone & taper", [
     ["beta", "HelixAngle", "Helix angle °", "num", { min: 0, max: 60, step: 1 }, "Helix angle at pitch cylinder (deg). 0 = spur"],
     ["reversals", "Reversals", "Reversals", "int", { min: 0, max: 50, step: 1 }, "Helix direction changes over the height (1 = classic V, 0 = plain helical)"],
+    ["taper", "-", "Taper angle °", "num", { min: 0, max: 30, step: 0.5 }, "Tapered (lazy-susan) bearing: teeth become cones at this angle, so the planets act like tapered rollers and carry axial load. 0 = straight. Larger planets (8+ teeth) allow larger angles"],
+    ["taper_mirror", "-", "Mirror (double taper)", "bool", null, "Reverse the taper at mid-height: planets become double cones that lock both ways"],
+    ["taper_flip", "-", "Flip taper", "bool", null, "Single taper: planets wide at the top instead of the bottom. Mirrored: planets thinnest instead of fattest at mid-height"],
   ]],
   ["4 Print tolerance", [
     ["expansion", "PrintExpansion", "Flank gap", "num", { min: -0.5, max: 1, step: 0.01 }, "Total flank gap per contact (mm). Each mating part is pulled back by half. Also enlarges bores by half"],
     ["root_clear", "RootClearance", "Root clearance", "num", { min: 0, max: 1, step: 0.01 }, "Radial clearance tooth tip -> mating root (mm), on top of the flank gap"],
     ["chamfer", "EdgeChamfer", "Edge chamfer", "num", { min: 0, max: 2, step: 0.05 }, "45° chamfer on tooth tips, OD and bore edges, top & bottom (elephant foot / print-in-place)"],
-    ["tip_land", "TipLand", "Tip land", "num", { min: 0, max: 1, step: 0.01 }, "Minimum tooth top land (mm); pointed tips are truncated to this"],
+    ["tip_land", "TipLand", "Tip land", "num", { min: 0, max: 1, step: 0.005 }, "Minimum tooth top land (mm); pointed tips are truncated to this"],
   ]],
   ["5 Bores", [
     ["sun_bore_shape", "SunBoreShape", "Sun bore shape", "sel", ["Round", "Hex", "Square", "D-Flat", "None"], "Sun bore shape (size = ID)"],
@@ -32,10 +35,11 @@ const GROUPS = [
     ["planet_bore_d", "PlanetBoreDiameter", "Planet bore", "num", { min: 0, max: 100, step: 0.05 }, "Planet bore diameter (0 = solid planets). Hex = across flats"],
     ["planet_bore_shape", "PlanetBoreShape", "Planet bore shape", "sel", ["Round", "Hex"], "Planet bore shape"],
   ]],
-  ["6 Phasing & wear", [
+  ["6 Surface texture", [...texFields("od", "Outer (ring OD)"), ...texFields("bore", "Inner (sun bore)")]],
+  ["7 Phasing & wear", [
     ["hunting", "EvenWear", "Even wear (hunting tooth)", "bool", null, "Force gcd(sun, planet) = 1 so every tooth meets every mating tooth"],
   ]],
-  ["7 Advanced", [
+  ["8 Advanced", [
     ["module_auto", "ModuleMode", "Module", "mode", { min: 0.05, max: 20, step: 0.001, val: "module" }, "Auto = planets centred in the OD/ID annulus, m = (OD+ID)/(Zs+Zr)"],
     ["shift_auto", "ProfileShiftMode", "Profile shift x", "mode", { min: -1, max: 1.5, step: 0.001, val: "shift" }, "Auto = planet shift to avoid undercut (S0 scheme: sun -x, ring +x)"],
     ["min_planet_gap", "MinPlanetGap", "Min planet gap", "num", { min: 0, max: 5, step: 0.05 }, "Minimum gap between neighbouring planet tips (mm)"],
@@ -45,10 +49,22 @@ const GROUPS = [
     ["mesh_dev", "MeshDeviation", "Mesh deviation", "num", { min: 0.001, max: 0.2, step: 0.001 }, "Max chord error of arcs / flanks in the STL (mm)"],
   ]],
 ];
+function texFields(w, title) {
+  const where = w === "od" ? "the ring's outer surface" : "the sun bore (Round bores only)";
+  return [
+    [w + "_tex", "-", title, "sel", TEX_TYPES, `Texture cut into ${where}: knurls (straight / diagonal / diamond), dimples or oval reliefs`],
+    [w + "_tex_depth", "-", " depth", "num", { min: 0.05, max: 2, step: 0.05 }, "How deep the texture cuts in (mm). Counts against the ring wall / sun rim"],
+    [w + "_tex_pitch", "-", " pitch", "num", { min: 0.3, max: 20, step: 0.1 }, "Spacing between ridges / dimples around the surface (mm)"],
+    [w + "_tex_angle", "-", " angle °", "num", { min: 0, max: 75, step: 1 }, "Diagonal / diamond knurl: helix angle from the axis. Ovals: tilt from the axis"],
+    [w + "_tex_size", "-", " width", "num", { min: 0.2, max: 20, step: 0.1 }, "Dimple diameter / oval width (mm)"],
+    [w + "_tex_aspect", "-", " oval length ×", "num", { min: 1, max: 6, step: 0.1 }, "Oval length as a multiple of its width"],
+  ];
+}
 const LOCKS = { N: "N", Zr: "Zr", Zs: "Zs", Zp: "Zp" };
-const RESOLVE_TRIGGERS = new Set(["N", "Zr", "Zs", "Zp", "OD", "ID", "alpha", "expansion", "root_clear", "tip_land",
-  "sun_bore_shape", "hunting", "module_auto", "module", "shift_auto", "shift", "min_planet_gap", "min_wall", "min_module"]);
-const STORE = "pb.params.v1";
+const RESOLVE_TRIGGERS = new Set(["N", "Zr", "Zs", "Zp", "OD", "ID", "H", "alpha", "expansion", "root_clear", "tip_land",
+  "sun_bore_shape", "hunting", "module_auto", "module", "shift_auto", "shift", "min_planet_gap", "min_wall", "min_module",
+  "taper", "taper_mirror", "taper_flip", "od_tex", "od_tex_depth", "bore_tex", "bore_tex_depth"]);
+const STORE = "pb.params.v2";
 const FIELDS = new Map();          // key -> spec
 for (const [, fs] of GROUPS) for (const f of fs) FIELDS.set(f[0], f);
 
@@ -96,14 +112,14 @@ function buildForm() {
   root.innerHTML = "";
   for (const [title, fs] of GROUPS) {
     const det = document.createElement("details");
-    det.open = !title.startsWith("7");
+    det.open = !title.startsWith("8");
     det.innerHTML = `<summary>${title}</summary>`;
     const box = document.createElement("div");
     box.className = "fields";
     for (const [key, prop, label, kind, opt, doc] of fs) {
       const row = document.createElement("div");
       row.className = "f";
-      row.title = `${prop}: ${doc}`;
+      row.title = prop === "-" ? `${doc} (web app only)` : `${prop}: ${doc}`;
       const id = "p_" + key;
       let ctl;
       if (kind === "num" || kind === "int") {
@@ -146,6 +162,15 @@ function writeForm(changed = []) {
   }
   $("p_sun_bore_flat").disabled = P.sun_bore_shape !== "D-Flat";
   $("p_planet_bore_shape").disabled = !(P.planet_bore_d > 0);
+  $("p_taper_mirror").disabled = $("p_taper_flip").disabled = !(P.taper > 0);
+  for (const w of ["od", "bore"]) {
+    const k = P[w + "_tex"], on = k !== "None" && !(w === "bore" && P.sun_bore_shape !== "Round");
+    $("p_" + w + "_tex_depth").disabled = $("p_" + w + "_tex_pitch").disabled = !on;
+    $("p_" + w + "_tex_angle").disabled = !on || !(k === "Diagonal knurl" || k === "Diamond knurl" || k === "Ovals");
+    $("p_" + w + "_tex_size").disabled = !on || !(k === "Dimples" || k === "Ovals");
+    $("p_" + w + "_tex_aspect").disabled = !on || k !== "Ovals";
+  }
+  $("p_bore_tex").disabled = P.sun_bore_shape !== "Round";
   for (const k of changed) {
     const el = $("p_" + k);
     if (!el) continue;
@@ -291,7 +316,8 @@ function toast(msg) {
 const g6 = (v) => String(parseFloat(Number(v).toPrecision(6)));   // Python %g
 function tag() {
   const g = last.g;
-  return `OD${g6(P.OD)}_ID${g6(P.ID)}_H${g6(P.H)}_S${g.Zs}P${g.Zp}x${g.N}R${g.Zr}_b${g6(P.beta)}_e${g6(P.expansion)}`;
+  const tp = P.taper > 0 ? `_tp${g6(P.taper)}${P.taper_mirror ? "m" : ""}${P.taper_flip ? "f" : ""}` : "";
+  return `OD${g6(P.OD)}_ID${g6(P.ID)}_H${g6(P.H)}_S${g.Zs}P${g.Zp}x${g.N}R${g.Zr}_b${g6(P.beta)}_e${g6(P.expansion)}${tp}`;
 }
 function save(buf, name) {
   const url = URL.createObjectURL(new Blob([buf], { type: "model/stl" }));
