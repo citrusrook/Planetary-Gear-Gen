@@ -7,7 +7,7 @@ auto-corrected for compatibility (the property you just edited is held fixed
 if possible). Read the 'Report' property for phasing / wear / mesh checks.
 Set 'Export Now' = true (or 'Export On Recompute') to write STL files.
 
-V2 note: the taper (lazy-susan) and surface-texture options are built by the web app only;
+V2/V3 note: taper, textures, spline bore, planet pins, external teeth and gear trains are built by the web app only;
 this object keeps the V1 geometry (the shared pb_math solver treats them as off).
 """
 import math
@@ -40,7 +40,7 @@ PROPS = [
     ("App::PropertyIntegerConstraint", "Reversals", "3 Herringbone", "How many times the helix reverses over the height (1 = classic V, 0 = plain helical)", (1, 0, 50, 1)),
 
     ("App::PropertyFloatConstraint", "PrintExpansion", "4 Print tolerance", "Total flank gap per contact in mm (0.01 steps). Each of the 2 mating parts is pulled back by half. Also enlarges bores by half", (0.1, -0.5, 1.0, 0.01)),
-    ("App::PropertyFloatConstraint", "RootClearance", "4 Print tolerance", "Radial clearance tooth tip -> mating root in mm (separate from PrintExpansion)", (0.1, 0.0, 1.0, 0.01)),
+    ("App::PropertyFloatConstraint", "RootClearance", "4 Print tolerance", "Radial clearance tooth tip -> mating root in mm (separate from PrintExpansion)", (0.08, 0.0, 1.0, 0.01)),
     ("App::PropertyFloatConstraint", "EdgeChamfer", "4 Print tolerance", "45 deg chamfer on tooth tips, OD and bore edges (top & bottom). Helps elephant foot / print-in-place", (0.3, 0.0, 2.0, 0.05)),
     ("App::PropertyFloatConstraint", "TipLand", "4 Print tolerance", "Minimum tooth top land in mm - pointed tips are truncated to this", (0.025, 0.0, 1.0, 0.005)),
 

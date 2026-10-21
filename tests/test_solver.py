@@ -86,10 +86,13 @@ def test_auto_shift_keeps_thin_end_at_undercut_limit():
 
 
 def test_taper_checks_the_wide_end():
-    # a strong taper deepens the ring roots at the wide end -> the default layout gets re-solved
-    p = P(taper=6.0)
+    # the taper deepens the ring roots at the wide end -> the default layout gets re-solved
+    p = P(taper=2.0)
     assert not pm.feasible(p, 31, 4, 14)[0]
     check(pm.solve(p, None), p)
+    # 6 deg on the flanks = ~16 deg cones on tips/roots: impossible in a 31.7 mm bearing
+    notes = pm.solve(P(taper=6.0), None)[4]
+    assert any("NO compatible" in n for n in notes)
 
 
 def test_no_taper_is_v1_identical():

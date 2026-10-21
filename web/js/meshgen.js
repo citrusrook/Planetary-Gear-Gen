@@ -171,7 +171,7 @@ function textureLoop(p, which, R0, sign, H, chamferC, clamp) {
   const kind = p[which + "_tex"] ?? "None";
   const depth = pm.texDepth(p, which);
   if (kind === "None" || !(depth > 0)) return null;
-  const lay = pm.texLayout(p, which, R0, p.chamfer ?? 0.3);
+  const lay = pm.texLayout(p, which, R0, pm.surfaceChamfer(p, which));
   const n = lay.n, pc = 2 * PI * R0 / n;                       // circumferential pitch at the surface
   let M, zs, f;
   if (kind.endsWith("knurl")) {
@@ -189,12 +189,14 @@ function textureLoop(p, which, R0, sign, H, chamferC, clamp) {
       const sh = (z) => z * tpsi / pc;
       f = kind === "Diagonal knurl" ? (i, z) => tri01(i / k + sh(z)) : (i, z) => max(tri01(i / k + sh(z)), tri01(i / k - sh(z)));
     }
-  } else {                                                      // Dimples / Ovals: spherical-cap pockets, staggered rows
+  } else {                                                      // Dimples / Ovals: spherical-cap pockets, staggered rows;
+                                                                // Raised ovals: surface recessed by depth, domes back up to R0
     const w = lay.w, Lz = lay.L, step = Math.max(0.03, Math.min(w / 8, pc / 6, 0.25));
     M = Math.max(n * 4, ceil(2 * PI * R0 / step));
     const nz = Math.max(2, ceil(H / step));
     zs = mergeZ(Array.from({ length: nz + 1 }, (_, j) => H * j / nz), chamferSections(H, chamferC));
-    const psi = kind === "Ovals" ? (p[which + "_tex_angle"] ?? 0) * PI / 180 : 0;
+    const psi = kind !== "Dimples" ? (p[which + "_tex_angle"] ?? 0) * PI / 180 : 0;
+    const raised = kind === "Raised ovals";
     const cs = cos(psi), sn = sin(psi);
     const d = Math.min(depth, 0.499 * w), Rs = (w * w / 4 + d * d) / (2 * d);
     const rows = [];
@@ -220,7 +222,7 @@ function textureLoop(p, which, R0, sign, H, chamferC, clamp) {
           if (dep > best) best = dep;
         }
       }
-      return best / depth;
+      return raised ? 1 - best / depth : best / depth;
     };
   }
   const A = Float64Array.from({ length: M }, (_, i) => 2 * PI * i / M);
@@ -402,23 +404,68 @@ function repairDropped(t, loops, which) {
  *  The profile moves almost linearly with x, so the straight walls between sections deviate far
  *  less than mesh_dev; finer steps only add facets. */
 function taperSections(p, m, H) {
-  const t = p.taper ?? 0;
-  if (!t) return [];
-  const step = Math.min(H / 4, Math.max(0.04, 0.08 * m / Math.tan(abs(t) * PI / 180)));
+  const k = pm.taperRate(p, m);
+  if (!k) return [];
+  const step = Math.min(H / 4, Math.max(0.04, 0.08 / k));
   const n = ceil(H / step), out = [];
   for (let j = 0; j <= n; j++) out.push(H * j / n);
   if (p.taper_mirror) out.push(H / 2);
   return out;
 }
 
-export function buildBearing(p) {
+/** z sections for the external teeth: sag <= tol per helix leg (+ chamfer sections). */
+function extSections(p, H, rp, rmax, c, tol) {
+  const kind = p.ext_helix ?? "Straight";
+  if (kind === "Straight" || !p.ext_beta) return mergeZ([0, H], chamferSections(H, c));
+  const tb = Math.tan(p.ext_beta * PI / 180);
+  const legs = kind === "Helical" ? [[0, H]] : [[0, H / 2], [H / 2, H]];
+  const zs = [];
+  for (const [z0, z1] of legs) {
+    const k = max(1, ceil(tb * (z1 - z0) / rp / dphiFor(rmax, tol)));
+    for (let j = 0; j <= k; j++) zs.push(z0 + (z1 - z0) * j / k);
+  }
+  return mergeZ(zs, chamferSections(H, c));
+}
+
+/** Loop with a z-dependent radius about (0,0): rOf(z) -> radius. */
+function circleZLoop(R0, rOf, tol) {
+  const L = circleLoop(R0, tol), M = L.r.length;
+  return { M, at: (z) => ({ r: new Float64Array(M).fill(rOf(z)), a: L.a }) };
+}
+
+/** Off-centre circle (cx, cy, r) as a polar loop about the origin (for holes in a plate). */
+function offCircleLoop(cx, cy, r, tol) {
+  const n = max(24, ceil(2 * PI / dphiFor(r, tol)));
+  const R = new Float64Array(n), A = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const t = 2 * PI * i / n, x = cx + r * cos(t), y = cy + r * sin(t);
+    R[i] = hypot(x, y); A[i] = Math.atan2(y, x);
+  }
+  return { M: n, at: () => ({ r: R, a: A }) };
+}
+
+/** Solid of revolution from an (r, z) profile, z strictly increasing. */
+function revolveBody(rz, tol) {
+  const zs = rz.map((q) => q[1]), Rm = Math.max(...rz.map((q) => q[0]));
+  const byZ = new Map(rz.map(([r, z]) => [z, r]));
+  const loop = circleZLoop(Rm, (z) => byZ.get(z), tol);
+  return buildBody([{ loop, zs, twist: () => 0, hole: false }], zs[zs.length - 1]);
+}
+
+/** One planetary bearing. opts: {hand, extRot} for external teeth in a gear train.
+ *  Returns {g, prof, phasing, parts: [{name, body, inst: [{x, y, rot, orbit?}]}], ringRoMax, ...}. */
+export function buildBearing(p, opts = {}) {
   const T0 = performance.now();
-  const H = p.H, ch = p.chamfer ?? 0.3, tol = p.surface_tol ?? 0.005, dev = p.mesh_dev ?? 0.01;
+  const H = p.H, tol = p.surface_tol ?? 0.005, dev = p.mesh_dev ?? 0.01;
+  const ch = p.chamfer ?? 0.3, chPl = p.planet_chamfer ?? ch;
+  const chOD = pm.surfaceChamfer(p, "od");
+  let chBore = pm.surfaceChamfer(p, "bore");
   const flankTol = dev * 0.25;
   const g = pm.derive(p);
   const prof = pm.buildProfiles(p, g);
   // taper: one profile set per distinct shift offset dx(z) (mirror -> each one is used twice)
-  const tapered = pm.taperHalf(p, g.m) > 0;
+  const half = pm.taperHalf(p, g.m);
+  const tapered = half > 0;
   const profCache = new Map([[0, prof]]);
   const profsAtDx = (dx) => {
     const key = Math.round(dx * 1e12) / 1e12;
@@ -427,7 +474,6 @@ export function buildBearing(p) {
     return pr;
   };
   const profsAt = tapered ? (z) => profsAtDx(pm.taperDx(p, g.m, z)) : () => prof;
-  const half = pm.taperHalf(p, g.m);
   const extremes = tapered ? [prof, profsAtDx(-half), profsAtDx(half)] : [prof];
   const tz = taperSections(p, g.m, H);
   const T1 = performance.now();
@@ -438,11 +484,14 @@ export function buildBearing(p) {
   const zero = () => 0, ident = (r) => r;
   const holeClamp = (rh, c) => (c > 0 ? (r, dz) => (dz < c ? max(r, rh + c - dz) : r) : ident);
   const odClamp = (R, c) => (c > 0 ? (r, dz) => (dz < c ? min(r, R - c + dz) : r) : ident);
-  const fixedZ = (c) => mergeZ([0, H], chamferSections(H, c));
-  // chamfer cone radius at distance dz from a face for this section's profile (null = none)
+  const fixedZ = (c, h = H) => mergeZ([0, h], chamferSections(h, c));
   const extRc = (c) => (dz, pr) => (c > 0 && dz < c ? pr.ra - c + dz : null);
   const intRc = (c) => (dz, pr) => (c > 0 && dz < c ? pr.ri + c - dz : null);
   const minOver = (fn) => Math.min(...extremes.map(fn));
+  const parts = [];
+  // a bore chamfer may take at most 90% of the sun rim (it must not reach the tooth roots)
+  if (p.sun_bore_shape !== "Spline" && p.sun_bore_shape !== "None" && p.ID > 0)
+    chBore = min(chBore, max(0, 0.9 * (minOver((e) => e.sun.rf) - pm.sunBoreRadius(p) - pm.texDepth(p, "bore"))));
 
   // ---- sun
   const sch = ch > 0 ? minOver((e) => min(ch, 0.5 * (e.sun.ra - e.sun.rf))) : 0;
@@ -451,46 +500,113 @@ export function buildBearing(p) {
     twist: (z) => twist(z)[0], hole: false,
     zs: mergeZ(helixSections(H, hs, leg(0), prof.sun.ra, tol), chamferSections(H, sch), tz),
   }];
-  if (p.sun_bore_shape !== "None" && p.ID > 0) {
+  let spline = null;
+  if (p.sun_bore_shape === "Spline" && p.ID > 0) {
+    spline = pm.splineProfiles(p);
+    const bc = chBore > 0 ? min(chBore, 0.5 * (spline.bore.ro - spline.bore.ri)) : 0;
+    sunLoops.push({ loop: toothLoop(toothLayout([spline.bore], dev, flankTol, true), () => spline.bore, intRc(bc)),
+      twist: zero, zs: fixedZ(bc), hole: true });
+  } else if (p.sun_bore_shape !== "None" && p.ID > 0) {
     const rb = p.ID / 2 + d;
-    const tex = textureLoop(p, "bore", rb, +1, H, ch, holeClamp(rb, ch));
+    const tex = textureLoop(p, "bore", rb, +1, H, chBore, holeClamp(rb, chBore));
     sunLoops.push(tex ? { loop: tex.loop, zs: tex.zs, twist: zero, hole: true } : {
-      loop: radialLoop(boreLoop(p.sun_bore_shape, p.ID, d, p.sun_bore_flat ?? 0.4, dev), holeClamp(rb, ch)),
-      twist: zero, zs: fixedZ(ch), hole: true });
+      loop: radialLoop(boreLoop(p.sun_bore_shape, p.ID, d, p.sun_bore_flat ?? 0.4, dev), holeClamp(rb, chBore)),
+      twist: zero, zs: fixedZ(chBore), hole: true });
   }
-  const sun = buildBody(sunLoops, H);
+  parts.push({ name: "sun", body: buildBody(sunLoops, H), inst: [{ x: 0, y: 0, rot: 0 }] });
 
-  // ---- ring
+  // ---- ring (plain / textured OD, or external teeth)
   const R = p.OD / 2.0;
   const roMax = Math.max(...extremes.map((e) => e.ring.ro));
-  const c2 = ch > 0 ? min(ch, 0.45 * (R - roMax - pm.texDepth(p, "od"))) : 0;
-  const odTex = textureLoop(p, "od", R, -1, H, c2, odClamp(R, c2));
-  const ring = buildBody([
-    odTex ? { loop: odTex.loop, zs: odTex.zs, twist: zero, hole: false }
-      : { loop: radialLoop(circleLoop(R, dev), odClamp(R, c2)), twist: zero, zs: fixedZ(c2), hole: false },
+  let outer;
+  if (p.ext_teeth) {
+    const ge = pm.extGeometry(p);
+    const ep = { ...pm.rackEnvelope(ge.Z, ge.m, ge.alpha, 0.0, ge.c, ge.d, ge.ra, p.tip_land), Z: ge.Z };
+    const ce = chOD > 0 ? min(chOD, 0.5 * (ep.ra - ep.rf)) : 0;
+    const hand = opts.hand ?? 1, rot0 = opts.extRot ?? 0;
+    outer = { loop: toothLoop(toothLayout([ep], dev, flankTol, false), () => ep, extRc(ce)),
+      twist: (z) => rot0 + pm.extTwist(p, z, ge.rp, hand), hole: false, zs: extSections(p, H, ge.rp, ep.ra, ce, tol) };
+  } else {
+    const c2 = chOD > 0 ? min(chOD, 0.45 * (R - roMax - pm.texDepth(p, "od"))) : 0;
+    const odTex = textureLoop(p, "od", R, -1, H, c2, odClamp(R, c2));
+    outer = odTex ? { loop: odTex.loop, zs: odTex.zs, twist: zero, hole: false }
+      : { loop: radialLoop(circleLoop(R, dev), odClamp(R, c2)), twist: zero, zs: fixedZ(c2), hole: false };
+  }
+  parts.push({ name: "ring", body: buildBody([outer,
     { loop: toothLoop(toothLayout(extremes.map((e) => e.ring), dev, flankTol, true), (z) => profsAt(z).ring, intRc(ch)),
       twist: (z) => twist(z)[2] + ph.ring_rot, hole: true,
       zs: mergeZ(helixSections(H, hs, leg(2), roMax, tol), chamferSections(H, ch), tz) },
-  ], H);
+  ], H), inst: [{ x: 0, y: 0, rot: 0 }] });
 
-  // ---- planet (one body, N placements)
-  const pch = ch > 0 ? minOver((e) => min(ch, 0.5 * (e.planet.ra - e.planet.rf))) : 0;
+  // ---- planet (one body, N placements); optional captured pin in an hourglass bore
+  const pch = chPl > 0 ? minOver((e) => min(chPl, 0.5 * (e.planet.ra - e.planet.rf))) : 0;
   const raMax = Math.max(...extremes.map((e) => e.planet.ra));
   const plLoops = [{
     loop: toothLoop(toothLayout(extremes.map((e) => e.planet), dev, flankTol, false), (z) => profsAt(z).planet, extRc(pch)),
     twist: (z) => twist(z)[1], hole: false,
     zs: mergeZ(helixSections(H, hs, leg(1), raMax, tol), chamferSections(H, pch), tz),
   }];
-  if (p.planet_bore_d > 0) {
-    const bch = min(ch, 0.2);
+  const pg = p.planet_pins ? pm.pinGeometry(p) : null;
+  if (pg) {
+    const hg = (z) => pg.bore_mid + pg.v * abs(z - H / 2) / (H / 2);
+    plLoops.push({ loop: circleZLoop(pg.bore_face, hg, dev), twist: zero, zs: [0, H / 2, H], hole: true });
+  } else if (p.planet_bore_d > 0) {
+    const bch = min(chPl, 0.2);
     plLoops.push({ loop: radialLoop(boreLoop(p.planet_bore_shape, p.planet_bore_d, d, 0.4, dev), holeClamp(p.planet_bore_d / 2 + d, bch)),
       twist: zero, zs: fixedZ(bch), hole: true });
   }
-  const planet = buildBody(plLoops, H);
   const placements = ph.orbit.map((th, i) => ({ x: g.a * cos(th), y: g.a * sin(th), rot: ph.spins[i], orbit: th }));
+  parts.push({ name: "planet", body: buildBody(plLoops, H), inst: placements });
+
+  const extras = [];
+  if (pg) {
+    // pin: hourglass inside the planet, 0.3 mm above the top a 45 deg collar, then a stub for the carrier
+    const gapTop = 0.3, cTop = H + gapTop + pg.collar, t = p.carrier_t ?? 2.0;
+    const e0 = min(0.15, pg.pin_face * 0.2);
+    const pin = revolveBody([[pg.pin_face - e0, 0], [pg.pin_face, e0], [pg.pin_mid, H / 2], [pg.pin_face, H],
+      [pg.pin_face, H + gapTop], [pg.pin_face + pg.collar, cTop], [pg.pin_face, cTop + 1e-3], [pg.pin_face, cTop + t - e0],
+      [pg.pin_face - e0, cTop + t]], dev);
+    parts.push({ name: "pin", body: pin, inst: placements.map((q) => ({ x: q.x, y: q.y, rot: 0, orbit: q.orbit })) });
+    // carrier plate: annulus over the planet orbit with a hole per pin stub
+    const w = pg.pin_face + pg.collar + 1.5;
+    const holes = placements.map((q) => ({ loop: offCircleLoop(q.x, q.y, pg.pin_face + (p.carrier_fit ?? 0.1) / 2, dev),
+      twist: zero, zs: [0, t], hole: true }));
+    const plate = buildBody([{ loop: radialLoop(circleLoop(g.a + w, dev), ident), twist: zero, zs: [0, t], hole: false },
+      { loop: radialLoop(circleLoop(Math.max(0.5, g.a - w), dev), ident), twist: zero, zs: [0, t], hole: true }, ...holes], t);
+    extras.push({ name: "carrier", body: plate, R: g.a + w });
+  }
+  if (spline) {
+    const L = Math.max(1, p.shaft_length ?? 15), sh = spline.shaft;
+    const sc = chBore > 0 ? min(chBore, 0.5 * (sh.ra - sh.rf)) : 0;
+    const loops = [{ loop: toothLoop(toothLayout([sh], dev, flankTol, false), () => sh, extRc(sc)), twist: zero, zs: fixedZ(sc, L), hole: false }];
+    if ((p.shaft_bore ?? 0) > 0) loops.push({ loop: radialLoop(circleLoop(p.shaft_bore / 2 + d, dev), holeClamp(p.shaft_bore / 2 + d, min(sc, 0.3))),
+      twist: zero, zs: fixedZ(min(sc, 0.3), L), hole: true });
+    extras.push({ name: "shaft", body: buildBody(loops, L), R: sh.ra });
+  }
   const T2 = performance.now();
-  return { g, prof, phasing: ph, ring, sun, planet, placements, ringRoMax: roMax, profileSets: profCache.size,
-    ms: { profiles: T1 - T0, mesh: T2 - T1 } };
+  return { g, prof, phasing: ph, parts, extras, placements, ringRoMax: roMax, profileSets: profCache.size,
+    Rmax: p.ext_teeth ? pm.extGeometry(p).ra : R, ms: { profiles: T1 - T0, mesh: T2 - T1 } };
+}
+
+/** Whole build: one bearing, or every bearing of a gear train placed at its centre; extras
+ *  (spline shafts, carrier plates) laid out in a row below so the STL prints in one go. */
+export function buildTrain(p) {
+  const { bearings, notes } = pm.trainLayout(p);
+  const built = bearings.map((b) => ({ ...b, B: buildBearing(b.p, { hand: b.hand, extRot: b.rot }) }));
+  const parts = [];
+  let minY = Infinity, minX = Infinity;
+  for (const b of built) {
+    minY = Math.min(minY, b.cy - b.B.Rmax); minX = Math.min(minX, b.cx - b.B.Rmax);
+    for (const pt of b.B.parts)
+      parts.push({ ...pt, bearing: b.name, inst: pt.inst.map((q) => ({ ...q, x: q.x + b.cx, y: q.y + b.cy })) });
+  }
+  let x = minX;
+  for (const b of built) for (const ex of b.B.extras) {
+    const y = minY - 4 - ex.R;
+    parts.push({ name: ex.name, bearing: b.name, body: ex.body, inst: [{ x: x + ex.R, y, rot: 0 }] });
+    x += 2 * ex.R + 4;
+  }
+  return { bearings: built, parts, notes };
 }
 
 // ---------------------------------------------------------------- checks

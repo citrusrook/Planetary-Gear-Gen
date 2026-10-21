@@ -67,6 +67,29 @@ async function fixture(name) {
     }
     check(`${name}: taper sections (${fx.taper_sections.length} heights)`, ex < 1e-12 && ep < 1e-6, `dx/x err ${ex.toExponential(2)}, profile err ${ep.toExponential(2)}`);
   }
+  if (fx.spline) {
+    const sp = pm.splineProfiles(p);
+    const eg = Math.max(...Object.entries(fx.spline.geometry).map(([k, v]) => Math.abs(sp.g[k] - v)));
+    const ep = Math.max(maxAbs(sp.bore.r, fx.spline.bore.r), maxAbs(sp.bore.t, fx.spline.bore.t),
+      maxAbs(sp.shaft.r, fx.spline.shaft.r), maxAbs(sp.shaft.t, fx.spline.shaft.t));
+    check(`${name}: spline geometry + profiles`, eg < 1e-9 && ep < 1e-6, `geom ${eg.toExponential(2)}, profiles ${ep.toExponential(2)}`);
+  }
+  if (fx.train) {
+    const t = pm.trainLayout(p);
+    let e = 0, bad = [];
+    t.bearings.forEach((b, i) => {
+      const f = fx.train.bearings[i];
+      if (!f) { bad.push("extra bearing " + b.name); return; }
+      for (const k of ["Ze", "hand"]) if (b[k] !== f[k]) bad.push(`${b.name}.${k} ${b[k]} vs ${f[k]}`);
+      for (const k of ["Zs", "Zp", "Zr", "N"]) if (b.p[k] !== f[k]) bad.push(`${b.name}.${k} ${b.p[k]} vs ${f[k]}`);
+      e = Math.max(e, Math.abs(b.cx - f.cx), Math.abs(b.cy - f.cy), Math.abs(b.rot - f.rot), Math.abs(b.p.OD - f.OD));
+      const ge = pm.extGeometry(b.p);
+      for (const [k, v] of Object.entries(f.ext)) e = Math.max(e, Math.abs(ge[k] - v));
+    });
+    if (t.bearings.length !== fx.train.bearings.length) bad.push("bearing count");
+    if (JSON.stringify(t.notes) !== JSON.stringify(fx.train.notes)) bad.push("notes " + JSON.stringify(t.notes));
+    check(`${name}: gear train layout (${t.bearings.length} bearings)`, !bad.length && e < 1e-9, bad.join("; ") || `max err ${e.toExponential(2)}`);
+  }
   for (const sc of fx.solver) {
     const q = { ...p, ...sc.input };
     const t0 = performance.now();
@@ -80,22 +103,25 @@ async function fixture(name) {
   return p;
 }
 
-function meshChecks(name, p, expect) {
+function meshChecks(name, p, expect, want = null) {
   const t0 = performance.now();
   const r = build(p);
   const ms = performance.now() - t0;
-  let tris = 0;
-  for (const k of ["ring", "sun", "planet"]) {
-    const c = r.checks[k];
-    tris += c.tris * (k === "planet" ? r.placements.length : 1);
-    check(`${name}: ${k} mesh closed & oriented`, c.ok, `${c.tris} tris, ${c.badEdges} bad edges`);
-    if (expect && expect[k]) {
-      const e = Math.abs(c.volume / expect[k] - 1);
-      check(`${name}: ${k} volume ${c.volume.toFixed(2)} mm³ vs FreeCAD ${expect[k]}`, e < 0.01, `${(e * 100).toFixed(2)} %`);
-    } else check(`${name}: ${k} volume ${c.volume.toFixed(2)} mm³ > 0`, c.volume > 0);
+  if (r.fatal) { check(`${name}: builds`, false, r.fatal.join("; ")); return null; }
+  let tris = 0, bodies = 0;
+  for (const c of r.checks) {
+    tris += c.tris * c.count; bodies += c.count;
+    const nm = `${name}: ${r.multi ? c.bearing + " " : ""}${c.name}${c.count > 1 ? " x" + c.count : ""}`;
+    check(`${nm} mesh closed & oriented`, c.ok, `${c.tris} tris, ${c.badEdges} bad edges`);
+    if (expect && expect[c.name] && !r.multi) {
+      const e = Math.abs(c.volume / expect[c.name] - 1);
+      check(`${nm} volume ${c.volume.toFixed(2)} mm³ vs FreeCAD ${expect[c.name]}`, e < 0.01, `${(e * 100).toFixed(2)} %`);
+    } else check(`${nm} volume ${c.volume.toFixed(2)} mm³ > 0`, c.volume > 0);
   }
-  lines.push(`     total ${tris} facets (${1 + 1 + r.placements.length} bodies), build ${ms.toFixed(0)} ms ` +
+  if (want) for (const w of want) check(`${name}: has ${w}`, r.checks.some((c) => c.name === w));
+  lines.push(`     total ${tris} facets (${bodies} bodies), build ${ms.toFixed(0)} ms ` +
     `(profiles ${r.ms.profiles.toFixed(0)}, mesh ${r.ms.mesh.toFixed(0)})`);
+  return r;
 }
 
 try {
@@ -103,10 +129,18 @@ try {
   const pv1 = await fixture("v1_default_profiles.json");
   const p2 = await fixture("large_hex_profiles.json");
   const p3 = await fixture("taper_susan_profiles.json");
+  const pv2 = await fixture("v2_default_profiles.json");
+  const pSpl = await fixture("spline_profiles.json");
+  const pPin = await fixture("pins_profiles.json");
+  const pWal = await fixture("walls_profiles.json");
+  const pTrn = await fixture("train_profiles.json");
+  window.__fx = { p1, pv1, pv2, p2, p3, pSpl, pPin, pWal, pTrn };
+  if (window.__onlyFixtures) throw new Error("fixtures only");
   // V1 defaults vs the FreeCAD export (Documents/PlanetaryBearing/PlanetaryBearing_OD31.7_ID22_..._e0.15.stl, trimesh)
   meshChecks("V1 default", pv1, { ring: 532.31, sun: 354.07, planet: 12.742 });
   // V2 defaults vs the FreeCAD export of the same (build/freecad/..._S31P4x14R39_b30_e0.1.stl, trimesh)
-  meshChecks("V2 default", p1, { ring: 713.95, sun: 419.27, planet: 40.597 });
+  meshChecks("V2 default", pv2, { ring: 713.95, sun: 419.27, planet: 40.597 });
+  meshChecks("V3 default", p1, null);
   meshChecks("large_hex", p2, null);
   for (const shape of ["Square", "D-Flat", "None"]) meshChecks(`default sun bore ${shape}`, { ...p1, sun_bore_shape: shape, ID: shape === "None" ? 18 : 8 }, null);
   meshChecks("no chamfer", { ...p1, chamfer: 0 }, null);
@@ -119,6 +153,18 @@ try {
   for (const [nm, o] of [["single", {}], ["single flip", { taper_flip: true }], ["mirror", { taper_mirror: true }], ["mirror flip", { taper_mirror: true, taper_flip: true }]])
     meshChecks(`taper 4° ${nm}`, { ...tp, ...o }, null);
   meshChecks("lazy susan (taper + knurl + ovals)", p3, null);
+  // V3
+  meshChecks("spline bore + shaft", pSpl, null, ["shaft"]);
+  meshChecks("planet pins + carrier", pPin, null, ["pin", "carrier"]);
+  meshChecks("fit walls", pWal, null);
+  const rt = meshChecks("gear train A-B-C (herringbone outer teeth)", pTrn, null);
+  if (rt) check("gear train: 3 bearings", rt.bearings.length === 3 && rt.multi);
+  meshChecks("gear train, helical, A-B", { ...pTrn, train: "A-B", ext_helix: "Helical" }, null);
+  meshChecks("outer teeth straight, single", { ...pTrn, train: "Single", ext_helix: "Straight" }, null);
+  meshChecks("OD raised ovals", { ...p1, od_tex: "Raised ovals", od_tex_depth: 0.15 }, null);
+  meshChecks("bore raised ovals", { ...p1, bore_tex: "Raised ovals" }, null);
+  meshChecks("separate chamfers", { ...p1, chamfer: 0.2, planet_chamfer: 0.1, ring_od_chamfer: 0.6, sun_bore_chamfer: 0.8 }, null);
+  meshChecks("pins + taper + train", { ...pTrn, train: "A-B", planet_pins: true, pin_d: 1.6, OD: 60, ID: 20 }, null);
   meshChecks("taper + diamond OD + planet bores", { ...tp, taper_mirror: true, od_tex: "Diamond knurl", planet_bore_d: 2 }, null);
 } catch (e) {
   check("exception", false, String(e.stack || e));

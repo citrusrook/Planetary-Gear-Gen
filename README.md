@@ -21,7 +21,18 @@ V2 adds:
 - a **taper** for lazy-susan / thrust bearings: the planets become cones like tapered rollers. **Mirror** makes a double taper; **Flip** reverses its direction.
 - **surface textures** on the ring OD and the sun bore: straight, diagonal or diamond knurl, dimples or oval reliefs.
 
-Both are under "3 Herringbone & taper" and "6 Surface texture". The report explains the limits; larger planets (8+ teeth) handle bigger taper angles.
+Both are under "3 Herringbone & taper" and "9 Surface texture".
+
+V3 adds:
+- The taper angle is now the lean of the load-carrying flanks.
+- Separate chamfers for the planets, the sun/ring teeth, the ring outside and the sun bore.
+- Ring-wall and sun-rim limits set separately (min/max), plus a "Walls" module mode that fits the teeth between wall targets.
+- Raised ovals as a texture.
+- A splined sun bore with a matching shaft.
+- Captured pins in the planets with a carrier plate (fixed-carrier drive: sun and ring as input/output).
+- Teeth on the ring outside (straight, helical or herringbone) and gear trains of 2–3 bearings (A→B→C) with ratios set or automatic.
+
+Extras (spline shaft, carrier plate) export separately. The report explains the limits; larger planets (8+ teeth) handle bigger taper angles.
 
 Only the Python standard library is needed to serve it. It runs in any current browser (Firefox ESR, Chromium, Chrome, Edge) and loads three.js and earcut from jsdelivr, so it needs internet. Edit the parameters on the left; tooth counts are auto-corrected the same way as in FreeCAD. Use **Download STL** for one print-in-place file, or Ring / Sun / Planets for separate files. `http://localhost:8765/web/tests.html` checks the JS port against `fixtures/`.
 

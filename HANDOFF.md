@@ -37,6 +37,7 @@ Extra parameters added during the build: `tip_land` (pointed tips are truncated 
 - **Saved outputs on Isaac's PC:** `Documents\PlanetaryBearing\PlanetaryBearing.FCStd` and `PlanetaryBearing_OD31.7_ID22_H5_S56P4x24R64_b30_e0.15.stl`. That STL is 388k facets, watertight, with 26 bodies.
 - **Done, verified (2026-10-08): Step 2, the web app** in `web/`. See §7 for how it is built and verified.
 - **Done, verified (2026-10-15): V2**: new defaults, tapered/lazy-susan bearings with mirror, and OD/bore textures. See §7.3.
+- **Done, verified (2026-10-21): V3** (branch `v3`): flank-angle taper, separate chamfers and walls, Fit-walls module, raised ovals, spline bore + shaft, planet pins + carrier, external teeth and A-B-C gear trains. See §7.4.
 
 ## 3. Repo layout
 
@@ -222,6 +223,47 @@ Isaac printed several V1 STLs: some worked, some didn't. V2 changes:
   - Python: 76 tests.
   - V2 default web mesh against FreeCAD's B-rep of the same layout: −0.42 / +0.30 / −0.04 % (`build/freecad/`, built with `freecadcmd`).
   - Browser STL exports of the defaults, textures, single/mirror/flip tapers and a 120 mm lazy susan: watertight, zero overlap on slices, gap 0.097–0.099 at e = 0.1.
+
+### 7.4 V3 (2026-10-21)
+
+Isaac's V3 list, as built. Taper, textures, spline, pins and trains are web-app geometry only; their math lives in `core/pb_math.py` as always.
+
+- **Defaults:** root clearance 0.08 (flank gap 0.1 and min module 0.5 were already set in V2). `DEFAULTS_V2` keeps the V2 set for the FreeCAD reference export.
+- **Taper fixed: the angle is now the flank angle.** `taper_rate() = tan(taper) / (m sin(alpha))`.
+  - A radial shift of x·m moves an involute flank along its normal by only x·m·sin α. In V2 the set angle tilted the tips and roots, so the load-carrying flanks only leaned about 40% of it.
+  - Tips and roots now cone at atan(tan τ / sin α), about 2.7× the set angle at 22°. The report prints both angles.
+  - Practical limits: 1–2° on small bearings; 6° is impossible at 31.7 mm and the solver says so.
+- **Separate chamfers:** `chamfer` (sun and ring teeth), `planet_chamfer`, `ring_od_chamfer` (outside or outer teeth) and `sun_bore_chamfer`.
+  - The bore chamfer is capped at 90% of the sun rim. A test found that 0.8 mm on a 0.72 mm rim broke the cap.
+- **Walls separate from the teeth:**
+  - `ring_wall_min/max` and `sun_wall_min/max` (max 0 = no limit) replace `min_wall`; `wall_limits()` falls back to `min_wall` for the FreeCAD object.
+  - `module_mode` is Auto, Manual or **Walls**. Walls mode fits the module so the teeth fill the space between the targets `ring_wall` / `sun_wall`; the solver keeps each wall within m/2 of its target.
+  - In Auto mode both walls are always equal, which is why the Walls mode exists.
+- **Raised ovals** texture: the surface is recessed by the depth and oval domes stand back up to the nominal size.
+- **Spline sun bore** (`sun_bore_shape="Spline"`, ID = pitch diameter, `spline_teeth`, `spline_alpha` 30°): an internal involute spline in the sun plus a matching shaft (`shaft_length`, `shaft_bore`).
+  - The shaft is exported next to the bearing ("Extras").
+- **Planet pins (fixed carrier):** each planet gets an hourglass bore with a captured pin (`pin_d` at mid-height, `pin_gap`, `pin_v`; captured when v > gap).
+  - Above each planet the pin has a 45° collar and a stub for the separate carrier plate (`carrier_t`, `carrier_fit`).
+  - The pins stick out at the top only, so the bearing still prints flat.
+  - `feasible()` requires a 0.4 mm planet rim, so switching pins on makes the solver pick bigger planets.
+  - The report gives the fixed-carrier ratio, sun:ring = −Zr:Zs.
+- **External teeth and gear trains:**
+  - `ext_teeth` puts external teeth on the ring: OD = tip diameter, x = 0, `ext_module`, auto or manual count. Style is Straight, Helical or Herringbone at `ext_beta`.
+  - The ring wall is measured to the outer root (`ring_outer_radius()`), and auto module uses it.
+  - `train_layout()` lays out A → B (→ C). Ratio A:B = B teeth / A teeth, or Auto from B_OD. C sits at `train_angle` around B.
+  - Each bearing's internal layout is solved from a start that keeps A's module and tooth/wall proportions (`_scaled_counts`).
+  - Tooth phases across each contact satisfy u_prev + u_this = ½ pitch. Helix hands alternate (A right, B left, C right).
+- **Web structure:** `buildBearing()` returns a generic `parts` list ({name, body, inst}); `buildTrain()` places every bearing and lays the extras out in a row.
+  - The checks table, STL export (All / Ring / Sun / Planets incl. pins / Extras) and the preview all work from that list.
+  - Animation: ring fixed; with pins, carrier fixed and sun/ring counter-rotating; for a train, the bearings turn on their outer teeth.
+- **Verified:**
+  - `tests/test_v3.py` covers the flank angle measured on generated profiles, wall limits, Fit-walls, spline clearance, pins forcing bigger planets, and a 2D kinematic simulation of A–B and B–C external meshes (zero overlap, gap = e, including C at 70°).
+  - `web/tests.html`: 369/369, matching the new fixtures exactly (spline, pins, walls and train layout including positions and phases). V1/V2 FreeCAD volumes are unchanged.
+  - `tests/test_stl_v3.py` on browser exports of 8 cases (default, spline, pins, Fit-walls, A-B-C herringbone train, helical A-B train with pins, raised ovals with big chamfers, mirrored flank taper):
+    - all watertight
+    - planets to sun/ring gaps 0.096–0.101, outer teeth A–B / B–C 0.101, pins 0.142 (set 0.15)
+    - carrier holes around the stubs equal fit/2; the spline shaft put back in the sun clears by e
+  - pytest: 107 passed.
 
 ## 8. Open ideas / not done
 

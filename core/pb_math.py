@@ -41,16 +41,27 @@ def derive(p, Zs=None, Zp=None, N=None, dx=0.0):
     al = math.radians(p["alpha"])
     c = p["root_clear"]
     d = p["expansion"] / 2.0
-    if p.get("module_auto", True):
-        m = (p["OD"] + p["ID"]) / float(Zs + Zr)
+    z_th = 2.0 / sin(al) ** 2
+    # practical (DIN 3960 style) undercut limit: allow slight undercut, Z'min = 5/6 * Zmin
+    x_auto = max(0.0, (5.0 / 6.0 * z_th - Zp) / z_th)
+    mode = module_mode(p)
+    R_out = ring_outer_radius(p)                 # OD/2, or the root of the external teeth
+    if mode == "Auto":
+        m = (2 * R_out + p["ID"]) / float(Zs + Zr)
+    elif mode == "Walls":
+        # teeth fill the space between the ring-wall and sun-wall targets (at the taper's wide end)
+        R_in = sun_bore_radius(p) + tex_depth(p, "bore") + p.get("sun_wall", 0.8)
+        R_o = R_out - tex_depth(p, "od") - p.get("ring_wall", 0.8)
+        m = max(1e-3, (R_o - R_in - 2 * (c + d)) / (Zp + 2 + 2 * x_auto))
+        for _ in range(4):                       # x at the wide end depends on m through the taper
+            xs = (x_auto if p.get("shift_auto", True) else p["shift"]) + 2 * taper_half(p, m, al) * (
+                1 if p.get("shift_auto", True) else 0.5)
+            m = max(1e-3, (R_o - R_in - 2 * (c + d)) / (Zp + 2 + 2 * xs))
     else:
         m = p["module"]
     if p.get("shift_auto", True):
-        # practical (DIN 3960 style) limit: allow slight undercut, Z'min = 5/6 * Zmin
-        z_th = 2.0 / sin(al) ** 2
-        x = max(0.0, (5.0 / 6.0 * z_th - Zp) / z_th)
         # taper: centre the range so the thin end of the planet sits at the practical undercut limit
-        x += taper_half(p, m)
+        x = x_auto + taper_half(p, m, al)
     else:
         x = p["shift"]
     x += dx
@@ -93,10 +104,12 @@ def tip_radius(Z, m, al, x, d, ra_nom, land):
     return lo
 
 
-def bore_outer_radius(shape, dia, comp):
-    """Max radius of a bore (for wall checks)."""
+def bore_outer_radius(shape, dia, comp, p=None):
+    """Max radius of a bore (for wall checks). A Spline bore needs p (its teeth / pressure angle)."""
     if shape == "None" or dia <= 0:
         return 0.0
+    if shape == "Spline":
+        return spline_geometry(p)["ro_r"]
     r = dia / 2.0 + comp
     if shape == "Hex":
         return r / cos(pi / 6)
@@ -105,15 +118,45 @@ def bore_outer_radius(shape, dia, comp):
     return r
 
 
-TEX_TYPES = ("None", "Straight knurl", "Diagonal knurl", "Diamond knurl", "Dimples", "Ovals")
+def sun_bore_radius(p):
+    return bore_outer_radius(p["sun_bore_shape"], p["ID"], p["expansion"] / 2.0, p)
 
 
-def taper_half(p, m):
-    """Half of the profile-shift range caused by the taper: dx(z) spans [-half, +half]."""
+def module_mode(p):
+    """'Auto' | 'Manual' | 'Walls' (older parameter sets only have module_auto)."""
+    mm = p.get("module_mode")
+    if mm in ("Auto", "Manual", "Walls"):
+        return mm
+    return "Auto" if p.get("module_auto", True) else "Manual"
+
+
+def wall_limits(p):
+    """(ring_min, ring_max, sun_min, sun_max); max 0 = no limit. Older sets have one min_wall."""
+    w = p.get("min_wall", 0.5)
+    return (p.get("ring_wall_min", w), p.get("ring_wall_max", 0.0),
+            p.get("sun_wall_min", w), p.get("sun_wall_max", 0.0))
+
+
+TEX_TYPES = ("None", "Straight knurl", "Diagonal knurl", "Diamond knurl", "Dimples", "Ovals", "Raised ovals")
+
+
+def taper_rate(p, m, al=None):
+    """Profile-shift change per mm of height. The taper angle is the lean of the load-carrying
+    flanks: a radial shift x*m moves an involute flank along its normal by x*m*sin(alpha), so
+    dx/dz = tan(taper) / (m sin(alpha)). Tips and roots lean more: atan(tan(taper)/sin(alpha))."""
     t = p.get("taper", 0.0)
     if not t:
         return 0.0
-    return tan(math.radians(t)) / m * p["H"] * (0.25 if p.get("taper_mirror", False) else 0.5)
+    al = math.radians(p["alpha"]) if al is None else al
+    return tan(math.radians(t)) / (m * sin(al))
+
+
+def taper_half(p, m, al=None):
+    """Half of the profile-shift range caused by the taper: dx(z) spans [-half, +half]."""
+    k = taper_rate(p, m, al)
+    if not k:
+        return 0.0
+    return k * p["H"] * (0.25 if p.get("taper_mirror", False) else 0.5)
 
 
 def taper_dx(p, m, z):
@@ -121,14 +164,152 @@ def taper_dx(p, m, z):
 
     single:   planet wide at the bottom (flip: at the top)
     mirrored: planet fattest at mid-height (flip: thinnest), a double cone that locks both ways"""
-    t = p.get("taper", 0.0)
-    if not t:
+    k = taper_rate(p, m)
+    if not k:
         return 0.0
     H = p["H"]
     s = (H / 4 - abs(z - H / 2)) if p.get("taper_mirror", False) else (H / 2 - z)
     if p.get("taper_flip", False):
         s = -s
-    return tan(math.radians(t)) / m * s
+    return k * s
+
+
+# --------------------------------------------------------------------------
+#  V3: spline bore, planet pins, external teeth and gear trains
+# --------------------------------------------------------------------------
+def spline_geometry(p):
+    """Internal involute spline in the sun bore (ID = pitch diameter) and its shaft; S0, x = 0."""
+    Z = int(p.get("spline_teeth", 12))
+    al = math.radians(p.get("spline_alpha", 30.0))
+    m = p["ID"] / Z
+    c, d = p["root_clear"], p["expansion"] / 2.0
+    rr = m * Z / 2
+    g = dict(Z=Z, Zr=Z, m=m, alpha=al, x=0.0, c=c, d=d, rr=rr, rbr=rr * cos(al))
+    g["ri_r"] = max(rr - m + d, g["rbr"] * 1.0005)     # internal tip (bore minimum)
+    g["ro_r"] = rr + m + c + d                         # internal root (bore maximum)
+    g["ra_shaft"] = tip_radius(Z, m, al, 0.0, d, rr + m - d, p.get("tip_land", 0.1))
+    g["rf_shaft"] = rr - m - c - d
+    return g
+
+
+def spline_profiles(p):
+    """(bore profile like ring_profile, shaft profile like rack_envelope) for the Spline bore."""
+    g = spline_geometry(p)
+    land = p["tip_land"]
+    bore = dict(zip(("r", "t", "ri", "ro"), ring_profile(g, land)), Z=g["Z"])
+    r, t, rf, ra = rack_envelope(g["Z"], g["m"], g["alpha"], 0.0, g["c"], g["d"], g["ra_shaft"], land)
+    shaft = dict(r=r, t=t, rf=rf, ra=ra, Z=g["Z"])
+    return g, bore, shaft
+
+
+def pin_geometry(p):
+    """Captured planet pin: hourglass bore (narrowest at mid-height) around a matching pin."""
+    rm = p.get("pin_d", 2.0) / 2.0
+    gap, v = p.get("pin_gap", 0.15), p.get("pin_v", 0.4)
+    return dict(pin_mid=rm, pin_face=rm + v, bore_mid=rm + gap, bore_face=rm + gap + v, v=v, gap=gap,
+                collar=p.get("pin_collar", 0.8), captured=v > gap + 1e-9)
+
+
+def ring_outer_radius(p):
+    """Radius the ring wall is measured to: OD/2, or the root of the external teeth."""
+    if not p.get("ext_teeth", False):
+        return p["OD"] / 2.0
+    return ext_geometry(p)["rf"]
+
+
+def ext_geometry(p):
+    """External teeth on the ring (x = 0 so meshing bearings keep standard centre distances).
+    OD is their tip diameter; with ext_z_auto the count is the largest that fits it."""
+    m = p.get("ext_module", 1.0)
+    al = math.radians(p["alpha"])
+    c, d = p["root_clear"], p["expansion"] / 2.0
+    if p.get("ext_z_auto", True):
+        Z = max(6, int(math.floor((p["OD"] + 2 * d) / m - 2 + 1e-9)))
+    else:
+        Z = int(p.get("ext_z", 30))
+    rp = m * Z / 2
+    ra = tip_radius(Z, m, al, 0.0, d, rp + m - d, p.get("tip_land", 0.1))
+    return dict(Z=Z, m=m, alpha=al, x=0.0, c=c, d=d, rp=rp, rb=rp * cos(al), ra=ra, rf=rp - m - c - d)
+
+
+def ext_twist(p, z, rp, hand):
+    """Rotation (rad) of external teeth at height z: straight, helical or herringbone (1 reversal).
+    hand alternates +1/-1 along a gear train so neighbours mesh."""
+    kind = p.get("ext_helix", "Straight")
+    if kind == "Straight" or not p.get("ext_beta", 0.0):
+        return 0.0
+    tb = tan(math.radians(p["ext_beta"]))
+    H = p["H"]
+    w = z if kind == "Helical" else (z if z <= H / 2 else H - z)
+    return hand * tb * w / rp
+
+
+TRAIN_NAMES = ("A", "B", "C")
+
+
+def _scaled_counts(pa, q):
+    """Starting tooth counts for another bearing q of the train: same module as A and the same
+    share of the annulus for the teeth (so the walls scale with the bearing, not the teeth)."""
+    ga = derive(pa)
+    c, d = pa["root_clear"], pa["expansion"] / 2.0
+    W_a = ring_outer_radius(pa) - sun_bore_radius(pa)
+    zone_a = ga["ro_r"] - ga["rf_s"]
+    W_q = ring_outer_radius(q) - sun_bore_radius(q)
+    m = ga["m"]
+    Zp = int(round((zone_a / W_a * W_q - 2 * (c + d)) / m - 2 - 2 * ga["x"]))
+    Zp = min(LIMITS["Zp_max"], max(LIMITS["Zp_min"], Zp))
+    S = (2 * ring_outer_radius(q) + q["ID"]) / m            # Zs + Zr at A's module
+    Zs = max(LIMITS["Zs_min"], int(round((S - 2 * Zp) / 2.0)))
+    a_q = m * (Zs + Zp) / 2.0
+    N = max(1, int(round(pa["N"] * (a_q / ga["a"]) * (pa["Zp"] / float(Zp)))))
+    return dict(Zs=Zs, Zp=Zp, Zr=Zs + 2 * Zp, N=N)
+
+
+def train_layout(p):
+    """Bearings of a gear train A -> B (-> C) meshing on their external teeth.
+
+    Ratio A:B = B teeth / A teeth (0 = Auto: B's count comes from B_OD); same for B:C.
+    Returns a list of dicts: name, p (full parameter set, tooth counts solved), Ze, cx, cy, rot (rad,
+    external teeth at z=0), hand, plus notes."""
+    n = {"Single": 1, "A-B": 2, "A-B-C": 3}.get(p.get("train", "Single"), 1)
+    out, notes = [], []
+    if not p.get("ext_teeth", False) or n == 1:
+        return [dict(name="A", p=p, Ze=ext_geometry(p)["Z"] if p.get("ext_teeth") else 0,
+                     cx=0.0, cy=0.0, rot=0.0, hand=1)], notes
+    me = p["ext_module"]
+    d = p["expansion"] / 2.0
+    ga = ext_geometry(p)
+    out.append(dict(name="A", p=p, Ze=ga["Z"], cx=0.0, cy=0.0, rot=0.0, hand=1))
+    prev = out[0]
+    phi = 0.0
+    for k, key in ((1, "ab"), (2, "bc")):
+        if k >= n:
+            break
+        name = TRAIN_NAMES[k]
+        ratio = p.get("ratio_" + key, 0.0)
+        ID = p.get(name + "_ID", p["ID"])
+        if ratio and ratio > 0:
+            Ze = max(6, int(round(prev["Ze"] * ratio)))
+            OD = me * (Ze + 2) - 2 * d
+        else:
+            OD = p.get(name + "_OD", p["OD"])
+            Ze = max(6, int(math.floor((OD + 2 * d) / me - 2 + 1e-9)))
+        q = dict(p, OD=OD, ID=ID, ext_z_auto=False, ext_z=Ze, train="Single")
+        q.update(_scaled_counts(p, q))
+        Zs, Zp, Zr, N, nt = solve(q, None)
+        q.update(Zs=Zs, Zp=Zp, Zr=Zr, N=N)
+        notes += ["%s: %s" % (name, t) for t in nt]
+        a = me * (prev["Ze"] + Ze) / 2.0
+        if k == 2:
+            phi = math.radians(p.get("train_angle", 0.0))
+        cx, cy = prev["cx"] + a * cos(phi), prev["cy"] + a * sin(phi)
+        # tooth phase: u_prev + u_this = 1/2 (pitches) across the contact line
+        pp, pt = 2 * pi / prev["Ze"], 2 * pi / Ze
+        u_prev = ((phi - prev["rot"]) / pp) % 1.0
+        rot = phi + pi - pt * (0.5 - u_prev)
+        out.append(dict(name=name, p=q, Ze=Ze, cx=cx, cy=cy, rot=rot, hand=-prev["hand"], a=a))
+        prev = out[-1]
+    return out, notes
 
 
 def taper_mode(p):
@@ -145,6 +326,8 @@ def tex_depth(p, which):
         return 0.0
     if which == "bore" and (p.get("sun_bore_shape") != "Round" or p.get("ID", 0) <= 0):
         return 0.0
+    if which == "od" and p.get("ext_teeth", False):
+        return 0.0
     return max(0.0, p.get(which + "_tex_depth", 0.0))
 
 
@@ -155,10 +338,11 @@ def tex_layout(p, which, R, chamfer=0.3):
     pitch = max(0.05, p.get(which + "_tex_pitch", 1.0))
     n = max(3, int(round(2 * pi * R / pitch)))
     out = dict(n=n, rows=0, pz=0.0, ext_z=0.0, w=0.0, L=0.0)
-    if kind in ("Dimples", "Ovals"):
+    if kind in ("Dimples", "Ovals", "Raised ovals"):
+        oval = kind != "Dimples"
         w = max(0.05, p.get(which + "_tex_size", 1.0))
-        L = w * max(1.0, p.get(which + "_tex_aspect", 1.0)) if kind == "Ovals" else w
-        psi = math.radians(p.get(which + "_tex_angle", 0.0)) if kind == "Ovals" else 0.0
+        L = w * max(1.0, p.get(which + "_tex_aspect", 1.0)) if oval else w
+        psi = math.radians(p.get(which + "_tex_angle", 0.0)) if oval else 0.0
         ext_z = L * abs(cos(psi)) + w * abs(sin(psi))
         pz = 0.5 * sqrt(3.0) * pitch * ext_z / w
         H = p["H"]
@@ -204,19 +388,39 @@ def feasible(p, Zs, Zp, N, why=False):
             reasons.append("adjacent planet tips gap %.3f < %.3f mm" % (gap, p["min_planet_gap"]))
             if not why:
                 return False, reasons
-    wall = p["OD"] / 2 - g_hi["ro_r"] - tex_depth(p, "od")
-    if wall < p["min_wall"] - 1e-9:
-        reasons.append("ring wall %.3f < %.3f mm" % (wall, p["min_wall"]))
+    rw_min, rw_max, sw_min, sw_max = wall_limits(p)
+    wall, rim = walls(p, g_hi)
+    if module_mode(p) == "Walls":                 # stay within half a module of the targets
+        rw_max = min(rw_max, p.get("ring_wall", 0.8) + g["m"] / 2) if rw_max > 0 else p.get("ring_wall", 0.8) + g["m"] / 2
+        sw_max = min(sw_max, p.get("sun_wall", 0.8) + g["m"] / 2) if sw_max > 0 else p.get("sun_wall", 0.8) + g["m"] / 2
+    for nm, v, lo_, hi_ in (("ring wall", wall, rw_min, rw_max), ("sun rim", rim, sw_min, sw_max)):
+        if v < lo_ - 1e-9:
+            reasons.append("%s %.3f < %.3f mm" % (nm, v, lo_))
+        elif hi_ > 0 and v > hi_ + 1e-9:
+            reasons.append("%s %.3f > max %.3f mm" % (nm, v, hi_))
+        else:
+            continue
         if not why:
             return False, reasons
-    rim = g_hi["rf_s"] - bore_outer_radius(p["sun_bore_shape"], p["ID"], g["d"]) - tex_depth(p, "bore")
-    if rim < p["min_wall"] - 1e-9:
-        reasons.append("sun rim %.3f < %.3f mm" % (rim, p["min_wall"]))
-        if not why:
-            return False, reasons
+    if p.get("planet_pins", False):
+        prim = g_lo["rf_p"] - pin_geometry(p)["bore_face"]
+        if prim < PIN_RIM - 1e-9:
+            reasons.append("planet rim around the pin %.3f < %.2f mm (planets too small for pins)" % (prim, PIN_RIM))
+            if not why:
+                return False, reasons
     if g_hi["rf_s"] <= 0 or g_lo["rf_p"] <= 0:
         reasons.append("negative root radius")
     return (len(reasons) == 0), reasons
+
+
+PIN_RIM = 0.4
+
+
+def walls(p, g_hi):
+    """(ring wall, sun rim) at the taper's wide end, after textures."""
+    wall = ring_outer_radius(p) - g_hi["ro_r"] - tex_depth(p, "od")
+    rim = g_hi["rf_s"] - sun_bore_radius(p) - tex_depth(p, "bore")
+    return wall, rim
 
 
 def solve(p, locked=None):
@@ -554,10 +758,19 @@ def report(p, g, prof, notes=()):
     tp = taper_profiles(p, g)
     hi = tp[3] if tp else prof                   # widest planet / deepest roots
     lo = tp[1] if tp else prof
-    wall = p["OD"] / 2 - hi["ring"]["ro"] - tex_depth(p, "od")
-    rim = hi["sun"]["rf"] - bore_outer_radius(p["sun_bore_shape"], p["ID"], g["d"]) - tex_depth(p, "bore")
-    L.append("Ring wall %.3f mm, sun rim %.3f mm (min %.2f)" % (wall, rim, p["min_wall"]))
-    if p["planet_bore_d"] > 0:
+    wall = ring_outer_radius(p) - hi["ring"]["ro"] - tex_depth(p, "od")
+    rim = hi["sun"]["rf"] - sun_bore_radius(p) - tex_depth(p, "bore")
+    rw_min, rw_max, sw_min, sw_max = wall_limits(p)
+    lim = lambda a, b: ("min %.2f" % a) + (", max %.2f" % b if b > 0 else "")
+    L.append("Ring wall %.3f mm (%s), sun rim %.3f mm (%s)%s" %
+             (wall, lim(rw_min, rw_max), rim, lim(sw_min, sw_max),
+              (" - module fitted to wall targets %.2f / %.2f" % (p.get("ring_wall", 0.8), p.get("sun_wall", 0.8)))
+              if module_mode(p) == "Walls" else ""))
+    if p.get("planet_pins", False):
+        pg = pin_geometry(p)
+        prim = lo["planet"]["rf"] - pg["bore_face"]
+        L.append("Planet rim around the pin bore %.3f mm%s" % (prim, "  (WARNING thin)" if prim < PIN_RIM else ""))
+    elif p["planet_bore_d"] > 0:
         prim = lo["planet"]["rf"] - bore_outer_radius(p["planet_bore_shape"], p["planet_bore_d"], g["d"])
         L.append("Planet rim around bore %.3f mm%s" % (prim, "  (WARNING thin)" if prim < 0.4 else ""))
     if N >= 2:
@@ -568,6 +781,7 @@ def report(p, g, prof, notes=()):
     if tp:
         L += report_taper(p, g, *tp)
     L += report_texture(p, g)
+    L += report_v3(p, g)
     ok, why = feasible(p, Zs, Zp, N, why=True)
     for w in why:
         L.append("WARNING: " + w)
@@ -578,6 +792,8 @@ def report_taper(p, g, g_lo, plo, g_hi, phi):
     L = ["=== Taper ==="]
     L.append("Taper %.1f deg (%s): planet profile shift x %+.3f .. %+.3f, mid-height %+.3f" %
              (p["taper"], taper_mode(p), g_lo["x"], g_hi["x"], g["x"]))
+    L.append("Load-carrying flanks lean %.1f deg; tooth tips and roots form cones of %.1f deg" %
+             (p["taper"], math.degrees(math.atan(tan(math.radians(p["taper"])) / sin(g["alpha"])))))
     L.append("Planet tip %.4f .. %.4f root %.4f .. %.4f | Sun tip %.4f .. %.4f root %.4f .. %.4f | "
              "Ring tip %.4f .. %.4f root %.4f .. %.4f" %
              (plo["planet"]["ra"], phi["planet"]["ra"], plo["planet"]["rf"], phi["planet"]["rf"],
@@ -610,9 +826,10 @@ def report_texture(p, g):
         if not L:
             L.append("=== Surface texture ===")
         if tex_depth(p, which) == 0.0:
-            L.append("%s: %s ignored - needs a Round sun bore" % (label, kind))
+            why = "needs a Round sun bore" if which == "bore" else "the ring has external teeth"
+            L.append("%s: %s ignored - %s" % (label, kind, why))
             continue
-        lay = tex_layout(p, which, R, p.get("chamfer", 0.3))
+        lay = tex_layout(p, which, R, surface_chamfer(p, which))
         d = p[which + "_tex_depth"]
         if kind.endswith("knurl"):
             ang = "" if kind == "Straight knurl" else ", helix %.1f deg" % p[which + "_tex_angle"]
@@ -623,8 +840,78 @@ def report_texture(p, g):
                 size = "%.2f mm" % lay["w"]
             else:
                 size = "%.2f x %.2f mm, tilt %.1f deg" % (lay["w"], lay["L"], p[which + "_tex_angle"])
-            L.append("%s: %s %s, depth %.3f mm, pitch %.2f mm -> %d around x %d row(s)" %
-                     (label, kind, size, d, p[which + "_tex_pitch"], lay["n"], lay["rows"]))
+            L.append("%s: %s %s, depth %.3f mm, pitch %.2f mm -> %d around x %d row(s)%s" %
+                     (label, kind, size, d, p[which + "_tex_pitch"], lay["n"], lay["rows"],
+                      " - surface recessed by the depth, ovals stand up to the nominal size" if kind == "Raised ovals" else ""))
             if lay["rows"] == 0:
                 L.append("WARNING: %s are taller than the height between the chamfers - none placed" % kind.lower())
+    return L
+
+
+def surface_chamfer(p, which):
+    """Chamfer at the ring OD ('od') or the sun bore ('bore'); older sets have one chamfer."""
+    return p.get("ring_od_chamfer" if which == "od" else "sun_bore_chamfer", p.get("chamfer", 0.3))
+
+
+def report_v3(p, g):
+    L = []
+    if p.get("sun_bore_shape") == "Spline":
+        sg = spline_geometry(p)
+        L.append("=== Spline bore ===")
+        L.append("Spline %d teeth, module %.4f mm, pressure angle %.1f deg: bore tip %.4f root %.4f | "
+                 "shaft tip %.4f root %.4f (gap %.3f per flank), shaft length %.1f mm%s" %
+                 (sg["Z"], sg["m"], math.degrees(sg["alpha"]), sg["ri_r"], sg["ro_r"], sg["ra_shaft"],
+                  sg["rf_shaft"], p["expansion"], p.get("shaft_length", 15.0),
+                  (", centre hole %.2f mm" % p["shaft_bore"]) if p.get("shaft_bore", 0) > 0 else ""))
+        if sg["rf_shaft"] - p.get("shaft_bore", 0) / 2 < 0.5:
+            L.append("WARNING: shaft wall around its centre hole is thin")
+    if p.get("planet_pins", False):
+        pg = pin_geometry(p)
+        L.append("=== Planet pins (fixed carrier) ===")
+        L.append("Captured pin per planet: diameter %.2f at mid-height, %.2f at the faces; hourglass bore %.2f..%.2f "
+                 "(radial gap %.2f); collar + %.1f mm stub above the top for the %.1f mm carrier plate (hole fit %+.2f)" %
+                 (2 * pg["pin_mid"], 2 * pg["pin_face"], 2 * pg["bore_mid"], 2 * pg["bore_face"], pg["gap"],
+                  p.get("carrier_t", 2.0), p.get("carrier_t", 2.0), p.get("carrier_fit", 0.1)))
+        if not pg["captured"]:
+            L.append("WARNING: pin V depth must exceed the radial gap, or the pins fall out")
+        L.append("Carrier fixed: sun:ring = -%d:%d -> ring turns %.4f per sun turn (opposite direction)" %
+                 (g["Zr"], g["Zs"], g["Zs"] / g["Zr"]))
+    if p.get("ext_teeth", False):
+        L += report_train(p)
+    return L
+
+
+def ext_contact_ratio(ga, gb):
+    a = ga["rp"] + gb["rp"]
+    pb = pi * ga["m"] * cos(ga["alpha"])
+    return (sqrt(max(ga["ra"] ** 2 - ga["rb"] ** 2, 0)) + sqrt(max(gb["ra"] ** 2 - gb["rb"] ** 2, 0)) -
+            a * sin(ga["alpha"])) / pb
+
+
+def report_train(p):
+    lay, notes = train_layout(p)
+    L = ["=== External teeth / gear train ==="]
+    L += notes
+    style = p.get("ext_helix", "Straight")
+    st = style if style == "Straight" else "%s %.1f deg" % (style, p.get("ext_beta", 0.0))
+    for b in lay:
+        q = b["p"]
+        ge = ext_geometry(q)
+        gq = derive(q)
+        L.append("%s: %d outer teeth (module %.3f, %s%s), tip dia %.3f, ring wall to outer root %.3f mm | "
+                 "inside sun %d / planets %d x %d / ring %d, module %.4f" %
+                 (b["name"], ge["Z"], ge["m"], st, "" if style == "Straight" else (" right" if b["hand"] > 0 else " left"),
+                  2 * ge["ra"], ge["rf"] - gq["ro_r"], q["Zs"], q["Zp"], q["N"], q["Zr"], gq["m"]))
+    for x, y in zip(lay, lay[1:]):
+        gx, gy = ext_geometry(x["p"]), ext_geometry(y["p"])
+        eps = ext_contact_ratio(gx, gy)
+        L.append("%s-%s: ratio %d:%d = %.4f (%s turns %.4f per %s turn, opposite direction), centre distance %.3f mm, "
+                 "contact ratio %.3f%s" %
+                 (x["name"], y["name"], x["Ze"], y["Ze"], y["Ze"] / x["Ze"], y["name"], x["Ze"] / y["Ze"], x["name"],
+                  y["a"], eps, "  (WARNING <1.0)" if eps < 1.0 else ""))
+    if len(lay) == 3:
+        L.append("A-C overall: %d:%d = %.4f, C turns the same way as A" %
+                 (lay[0]["Ze"], lay[2]["Ze"], lay[2]["Ze"] / lay[0]["Ze"]))
+    if style != "Straight" and len(lay) > 1:
+        L.append("Neighbours use opposite helix hands so they mesh")
     return L

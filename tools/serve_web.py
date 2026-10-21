@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Static dev server for the web app (serves the repo root; open /web/).
 
-Also accepts `PUT /upload/<name>.stl` and saves the body to build/, so an STL exported
-in the browser can be checked with trimesh (tests/test_stl_export.py).
+Also accepts `PUT /upload/<name>.stl` (saved to build/) and `PUT /upload/<case>/<name>.stl|json`
+(saved to build/v3/<case>/), so STLs exported in the browser can be checked with trimesh
+(tests/test_stl_export.py, tests/test_stl_v3.py).
 
     python3 tools/serve_web.py [port] [--host 0.0.0.0]
 
@@ -29,13 +30,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_PUT(self):
-        m = re.fullmatch(r"/upload/([\w.\-]+\.stl)", self.path)
-        if not m:
+        # /upload/<name>.stl or /upload/<case>/<name>.(stl|json) - names are plain words only
+        m = re.fullmatch(r"/upload/(?:([\w\-]+)/)?([\w.\-]+\.(?:stl|json))", self.path)
+        if not m or ".." in self.path:
             self.send_error(404)
             return
         n = int(self.headers.get("Content-Length", 0))
-        os.makedirs(OUT, exist_ok=True)
-        path = os.path.join(OUT, m.group(1))
+        folder = os.path.join(OUT, "v3", m.group(1)) if m.group(1) else OUT
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, m.group(2))
         with open(path, "wb") as f:
             f.write(self.rfile.read(n))
         self.send_response(200)
