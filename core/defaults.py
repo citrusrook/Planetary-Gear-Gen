@@ -25,7 +25,7 @@ DEFAULTS = dict(
     # captured print-in-place pin in every planet (fixed-carrier drive) + carrier plate
     planet_pins=False, pin_d=2.0, pin_gap=0.15, pin_v=0.4, pin_collar=0.8, carrier_t=2.0, carrier_fit=0.1,
     # external teeth on the ring and a gear train of bearings A -> B -> C
-    ext_teeth=False, ext_module=1.0, ext_z_auto=True, ext_z=30, ext_helix="Herringbone", ext_beta=20.0,
+    ext_teeth=False, ext_module=0.6, ext_z_auto=True, ext_z=30, ext_helix="Herringbone", ext_beta=20.0,
     train="Single", ratio_ab=0.0, ratio_bc=0.0, B_OD=31.7, B_ID=18.0, C_OD=31.7, C_ID=18.0, train_angle=0.0,
 )
 # FreeCAD-only / mesh extras: SunBoreFlat=0.4 (D-flat, fraction of ID), SurfaceTolerance=0.005, MeshDeviation=0.01

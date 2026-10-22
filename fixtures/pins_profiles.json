@@ -60,7 +60,7 @@
   "carrier_t": 2.0,
   "carrier_fit": 0.1,
   "ext_teeth": false,
-  "ext_module": 1.0,
+  "ext_module": 0.6,
   "ext_z_auto": true,
   "ext_z": 30,
   "ext_helix": "Herringbone",

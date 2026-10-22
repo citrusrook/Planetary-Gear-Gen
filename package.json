@@ -1,0 +1,23 @@
+{
+  "name": "3dp-herringbone-planetary-generator",
+  "version": "4.0.0",
+  "description": "Parametric print-in-place herringbone planetary gear bearing generator (web app + Node.js server and API)",
+  "type": "module",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "node scripts/build-local.mjs",
+    "test": "node --test \"tests-node/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=20 <25"
+  },
+  "dependencies": {
+    "earcut": "2.2.4",
+    "esbuild": "0.23.1",
+    "express": "4.21.2",
+    "three": "0.160.0"
+  }
+}

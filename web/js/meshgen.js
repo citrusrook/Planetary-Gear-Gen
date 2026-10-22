@@ -6,7 +6,7 @@
 //    helix sections (sag <= surface_tol, same rule as twisted_loft) + chamfer sections near faces
 //  * chamfers = per-vertex radial clamp:  external tips r' = min(r, ra - c + dz), holes r' = max(r, rh + c - dz)
 //  * caps = earcut of the z=0 / z=H rings (outer + holes), sharing the wall vertices -> watertight
-import earcut from "https://cdn.jsdelivr.net/npm/earcut@2.2.4/+esm";
+import earcut from "./earcut.js";
 import * as pm from "./pbmath.js";
 
 const { PI, cos, sin, max, min, ceil, round, abs, hypot } = Math;

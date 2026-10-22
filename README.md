@@ -36,6 +36,27 @@ Extras (spline shaft, carrier plate) export separately. The report explains the 
 
 Only the Python standard library is needed to serve it. It runs in any current browser (Firefox ESR, Chromium, Chrome, Edge) and loads three.js and earcut from jsdelivr, so it needs internet. Edit the parameters on the left; tooth counts are auto-corrected the same way as in FreeCAD. Use **Download STL** for one print-in-place file, or Ring / Sun / Planets for separate files. `http://localhost:8765/web/tests.html` checks the JS port against `fixtures/`.
 
+## Node.js version (branch v4) and hosting
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/citrusrook/Planetary-Gear-Gen/tree/v4)
+
+```
+npm install
+npm run build     # dist/3dp-planetary-generator-local.html (the offline single-file version)
+npm start         # http://localhost:3000/   (PORT and HOST env vars override)
+npm test          # fixtures parity, closed meshes, server + API
+```
+
+- `server.js` (Express) serves the same web app. three.js and earcut come from `node_modules`, so no CDN is needed.
+- **Local version** in the page header downloads one HTML file holding the whole app (three.js, the gear code and the worker inlined). Double-click it and it runs offline in any browser, with no install.
+- **JSON API** (same gear code as the browser; params are any keys of `/api/defaults`, unknown keys ignored):
+  - `GET /api/defaults`, `GET /api/health`
+  - `POST /api/solve` `{"params": {...}, "lock": "N"|"Zr"|"Zs"|"Zp"|null}` gives the tooth counts and notes
+  - `POST /api/report` `{"params": {...}}` gives the solved params and the report lines
+  - `POST /api/stl` `{"params": {...}, "which": "all"|"ring"|"sun"|"planets"|"extras"}` gives a binary STL (422 + reasons if the layout can't be built)
+- `render.yaml` is a Render Blueprint for one free web service: `3dp-herringbone-planetary-generator`, branch v4, `npm install && npm run build`, `npm start`, health check `/api/health`, Node from `.node-version`.
+  - Free instances sleep after 15 minutes without traffic, so the first visit afterwards takes about a minute to wake.
+
 ## FreeCAD
 
 ```

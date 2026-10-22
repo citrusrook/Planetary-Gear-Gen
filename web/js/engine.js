@@ -27,6 +27,16 @@ export function geometryErrors(p, label = "") {
     E.push("planet bore cuts through the planet teeth");
   if (p.sun_bore_shape === "Spline" && pm.splineGeometry(p).rf_shaft - (p.shaft_bore ?? 0) / 2 <= 0.05) E.push("spline shaft centre hole too big");
   if (g.N >= 2 && 2 * g.a * Math.sin(Math.PI / g.N) - 2 * hi.ra_p <= 0) E.push("neighbouring planets overlap");
+  if (E.length) {
+    // say how much room the teeth have and roughly how much the smallest layout needs
+    const [rw, , sw] = pm.wallLimits(p);
+    const room = pm.ringOuterRadius(p) - pm.sunBoreRadius(p) - odT - boreT;
+    const al = p.alpha * Math.PI / 180, zth = 2 / Math.sin(al) ** 2, x4 = Math.max(0, (5 / 6 * zth - 4) / zth);
+    const need = rw + sw + 2 * (p.root_clear + p.expansion / 2) + (p.min_module ?? 0.5) * (4 + 2 + 2 * x4);
+    if (room < need)
+      E.push(`only ${room.toFixed(2)} mm between the bore and the ${p.ext_teeth ? "outer tooth roots" : "OD"}; the smallest layout needs about ${need.toFixed(2)} mm - ` +
+        `make the OD bigger or the bore smaller${p.ext_teeth ? ", or lower the outer module" : ""}`);
+  }
   return E.map((e) => pre + e);
 }
 

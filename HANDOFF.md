@@ -38,6 +38,7 @@ Extra parameters added during the build: `tip_land` (pointed tips are truncated 
 - **Done, verified (2026-10-08): Step 2, the web app** in `web/`. See §7 for how it is built and verified.
 - **Done, verified (2026-10-15): V2**: new defaults, tapered/lazy-susan bearings with mirror, and OD/bore textures. See §7.3.
 - **Done, verified (2026-10-21): V3** (branch `v3`): flank-angle taper, separate chamfers and walls, Fit-walls module, raised ovals, spline bore + shaft, planet pins + carrier, external teeth and A-B-C gear trains. See §7.4.
+- **Done, verified (2026-10-21): V4** (branch `v4`): Node.js server + API, offline single-file local version, Render Blueprint. See §7.5.
 
 ## 3. Repo layout
 
@@ -264,6 +265,32 @@ Isaac's V3 list, as built. Taper, textures, spline, pins and trains are web-app 
     - planets to sun/ring gaps 0.096–0.101, outer teeth A–B / B–C 0.101, pins 0.142 (set 0.15)
     - carrier holes around the stubs equal fit/2; the spline shaft put back in the sun clears by e
   - pytest: 107 passed.
+
+### 7.5 V4 (2026-10-21): Node.js version, local download, Render
+
+Branch `v4` = V3 + a Node.js server. The web app code is unchanged apart from three points:
+- earcut now loads through `web/js/earcut.js`. It uses the npm package under Node, `/vendor/earcut.mjs` when served by `server.js`, and the jsDelivr CDN otherwise. Import maps don't reach module workers, so a bare specifier won't do.
+- `app.js` starts its worker from inline source (`__PB_WORKER_SRC__`) in the single-file build.
+- The default outer module is 0.6: at 1.0 the default 31.7 mm bearing has no room for a 0.5-module layout once outer teeth are on. The "cannot build" message now says how much room there is and what to change.
+
+The pieces:
+- `server.js` (Express 4.21.2):
+  - Rewrites `index.html`'s import map to `/vendor/three` (node_modules) and adds the **Local version** link.
+  - Serves `/js`, `/web`, `/fixtures` and `/vendor/earcut.mjs` (CommonJS earcut wrapped as ESM).
+  - API: `/api/defaults|health|solve|report|stl`.
+  - Binds `0.0.0.0:$PORT`.
+- `scripts/build-local.mjs` (esbuild 0.23.1) writes `dist/3dp-planetary-generator-local.html`, about 600 KB: an IIFE bundle with no module scripts and a blob worker, so it works from `file://`.
+- `tests-node/` (`npm test`):
+  - every fixture matches Python exactly under Node
+  - default, spline + pins, and A-B train meshes are closed
+  - the server serves vendored three.js and the link
+  - the API returns notes, the report and a valid binary STL, plus 422 for impossible layouts
+- `render.yaml`: free web service `3dp-herringbone-planetary-generator` from branch v4; `.node-version` = 24.
+- Node isn't installed system-wide on Isaac's PC: the MSI needs an admin (UAC) prompt that can't be shown from the Claude app. Development used the official portable Node 24.20.0 zip, sha256-verified, in the session scratch folder.
+- **Verified in the browser:**
+  - The Node-served site loads three.js and earcut only from `/vendor` (no CDN requests).
+  - The single-file version makes zero network requests and builds in its blob worker, planet pins included.
+  - `/download/local` serves the identical file as an attachment.
 
 ## 8. Open ideas / not done
 

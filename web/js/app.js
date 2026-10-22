@@ -120,7 +120,10 @@ let view = null;
 let worker = null, seq = 0, engineMod = null;
 const waiting = new Map();
 try {
-  worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+  // the single-file local version (scripts/build-local.mjs) inlines the worker as a string
+  worker = typeof __PB_WORKER_SRC__ === "string"
+    ? new Worker(URL.createObjectURL(new Blob([__PB_WORKER_SRC__], { type: "text/javascript" })))
+    : new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
   worker.onmessage = (ev) => { const w = waiting.get(ev.data.id); if (w) { waiting.delete(ev.data.id); ev.data.ok ? w.res(ev.data.result) : w.rej(new Error(ev.data.error)); } };
   worker.onerror = (e) => { console.warn("worker failed, using main thread", e); worker = null; for (const w of waiting.values()) w.retry(); waiting.clear(); };
 } catch (e) { worker = null; }

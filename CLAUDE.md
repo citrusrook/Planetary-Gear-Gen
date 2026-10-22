@@ -13,6 +13,8 @@ On Linux use `python3` (Debian has no `python`), or `sh tools/setup_venv.sh` and
 - `python -m pytest -q tests/test_stl_export.py`: trimesh checks (bodies, watertight, volumes, slice interference) on every `build/PlanetaryBearing_*.stl` (or `PB_STL=path`). Skipped when there is none.
 - `python -m pytest -q tests/test_stl_v3.py`: the same idea for V3 exports in `build/v3/<case>/` (one STL per part group + meta.json): planets, pins, outer teeth, spline shaft, carrier plate.
 
+- Node (branch v4): `npm install`, `npm run build` (dist/ local version), `npm start` (http://localhost:3000/), `npm test` (tests-node/).
+
 ## Rules
 - `core/pb_math.py` is the **source of truth** for gear math. The FreeCAD object and the web port (`web/js/pbmath.js`) must match it, checked against `fixtures/` (`web/tests.html`). Change both together.
 - Keep `core/` free of FreeCAD imports (numpy only).
@@ -23,4 +25,4 @@ On Linux use `python3` (Debian has no `python`), or `sh tools/setup_venv.sh` and
 - The user is Isaac. He prints on a Bambu P1S, uses FreeCAD 1.1 on Windows (and Debian Linux), and his default pressure angle is 22°.
 
 ## Current task
-V3 is done on branch `v3` (HANDOFF.md §7.4); V2 is on `v2` (§7.3), V1 on `main`. Taper and textures are web-only geometry, but their math (solver limits, report) lives in `core/pb_math.py` like everything else. Open ideas are in §8.
+V4 (Node server, local version, Render) is on branch `v4` (HANDOFF.md §7.5); V3 on `v3` (§7.4), V2 on `v2` (§7.3), V1 on `main`. Taper and textures are web-only geometry, but their math (solver limits, report) lives in `core/pb_math.py` like everything else. Open ideas are in §8.

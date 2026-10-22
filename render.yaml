@@ -1,0 +1,12 @@
+# Render Blueprint: one free Node web service from branch v4.
+# Deploy: https://render.com/deploy?repo=https://github.com/citrusrook/Planetary-Gear-Gen/tree/v4
+services:
+  - type: web
+    name: 3dp-herringbone-planetary-generator
+    runtime: node
+    plan: free
+    branch: v4
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit

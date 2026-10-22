@@ -24,7 +24,7 @@ export const DEFAULTS = {
   bore_tex: "None", bore_tex_depth: 0.2, bore_tex_pitch: 1.2, bore_tex_angle: 30.0, bore_tex_size: 1.0, bore_tex_aspect: 2.5,
   chamfer: 0.3, planet_chamfer: 0.3, ring_od_chamfer: 0.3, sun_bore_chamfer: 0.3,
   planet_pins: false, pin_d: 2.0, pin_gap: 0.15, pin_v: 0.4, pin_collar: 0.8, carrier_t: 2.0, carrier_fit: 0.1,
-  ext_teeth: false, ext_module: 1.0, ext_z_auto: true, ext_z: 30, ext_helix: "Herringbone", ext_beta: 20.0,
+  ext_teeth: false, ext_module: 0.6, ext_z_auto: true, ext_z: 30, ext_helix: "Herringbone", ext_beta: 20.0,
   train: "Single", ratio_ab: 0.0, ratio_bc: 0.0, B_OD: 31.7, B_ID: 18.0, C_OD: 31.7, C_ID: 18.0, train_angle: 0.0,
   // mesh-only extras
   sun_bore_flat: 0.4, surface_tol: 0.005, mesh_dev: 0.01,

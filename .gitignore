@@ -5,3 +5,5 @@ out/
 *.FCBak
 build/
 .venv/
+node_modules/
+dist/
